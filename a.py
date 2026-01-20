@@ -467,7 +467,7 @@ def worker_bot(q, stats):
 def update_dashboard(chat_id, stats):
     """Luồng riêng để update tin nhắn thống kê"""
     while stats.is_running and stats.processed < stats.total:
-        time.sleep(3.5) # Update mỗi 3.5s
+        time.sleep(1) # Update mỗi 3.5s
         
         elapsed = time.time() - stats.start_time
         if elapsed == 0: elapsed = 1
