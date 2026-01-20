@@ -30,7 +30,7 @@ import pycurl
 # ===================================================================
 # === CẤU HÌNH BOT TELEGRAM
 # ===================================================================
-API_TOKEN = 'YOUR_BOT_TOKEN_HERE'  # <--- THAY TOKEN CỦA BẠN VÀO ĐÂY
+API_TOKEN = '8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I'  # <--- THAY TOKEN CỦA BẠN VÀO ĐÂY
 bot = telebot.TeleBot(API_TOKEN)
 
 # Biến toàn cục để quản lý trạng thái
