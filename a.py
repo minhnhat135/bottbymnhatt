@@ -353,10 +353,10 @@ async def handle_document(message: types.Message):
         return await status_msg.edit_text("⚠️ File rỗng!")
 
     total_cards = len(cards)
-    await status_msg.edit_text(f"🚀 Bắt đầu check {total_cards} thẻ với 10 luồng...")
+    await status_msg.edit_text(f"🚀 Bắt đầu check {total_cards} thẻ với 100 luồng...")
 
     # Cấu hình worker
-    sem = asyncio.Semaphore(10) # 10 luồng
+    sem = asyncio.Semaphore(100) # 10 luồng
     tasks = []
     
     async with aiohttp.ClientSession() as session:
