@@ -10,6 +10,7 @@ import sys
 import time
 import asyncio
 import io
+import psutil  # Thư viện mới để check CPU/RAM
 from datetime import datetime
 
 # Thư viện Telegram Bot (aiogram 3.x)
@@ -30,7 +31,7 @@ import aiohttp
 # CẤU HÌNH BOT
 # ==========================================
 TOKEN = "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I"  # <--- Dán Token BotFather vào đây
-ALLOWED_USER_ID = 7787551672  # Nếu muốn giới hạn người dùng, điền ID vào đây (VD: 123456789)
+ALLOWED_USER_ID = 7787551672  # Nếu muốn giới hạn người dùng, điền ID vào đây
 
 # Khởi tạo Bot
 bot = Bot(token=TOKEN)
@@ -223,11 +224,17 @@ def generate_okhttp_profile():
     return {"client_identifier": selected_id, "user_agent": user_agent}
 
 # ===================================================================
-# === PHẦN 4: LOGIC CHECK CARD CHO BOT (MODIFIED)
+# === PHẦN 4: LOGIC CHECK CARD (CORE)
 # ===================================================================
 
 async def check_single_card(sem, session, card_line):
-    async with sem:
+    """
+    Hàm xử lý check 1 thẻ. 
+    Lưu ý: sem có thể là None nếu chạy lệnh đơn lẻ.
+    """
+    async_context = sem if sem else asyncio.Semaphore(1)
+    
+    async with async_context:
         try:
             normalized = normalize_card(card_line)
             if not normalized: return {"status": "INVALID_FMT", "msg": "Sai định dạng", "raw": card_line}
@@ -317,16 +324,94 @@ async def check_single_card(sem, session, card_line):
             return {"status": "CRASH", "msg": str(e), "raw": card_line}
 
 # ===================================================================
-# === PHẦN 5: BOT HANDLERS
+# === PHẦN 5: BOT HANDLERS & REAL-TIME LOGIC
 # ===================================================================
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     await message.reply(
-        "👋 Chào bạn!\n"
-        "Gửi cho tôi một file `.txt` chứa danh sách thẻ (định dạng `cc|mm|yy|cvv`).\n"
-        "Tôi sẽ kiểm tra và trả lại các thẻ **LIVE**."
+        "👋 Chào bạn!\n\n"
+        "1. Gửi file `.txt` (cc|mm|yy|cvv) để check hàng loạt.\n"
+        "2. Dùng lệnh `/st cc|mm|yy|cvv` để check 1 thẻ."
     )
+
+# --- XỬ LÝ LỆNH CHECK 1 THẺ (/st) ---
+@dp.message(Command("st"))
+async def check_single_cmd_handler(message: types.Message):
+    if ALLOWED_USER_ID and message.from_user.id != ALLOWED_USER_ID:
+        return await message.reply("⛔ Bạn không có quyền sử dụng bot này.")
+
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.reply("⚠️ Vui lòng nhập thẻ. Ví dụ: `/st 400000|10|2025|111`", parse_mode="Markdown")
+
+    card_input = args[1]
+    msg = await message.reply(f"⏳ Đang kiểm tra thẻ: `{card_input}`...", parse_mode="Markdown")
+
+    async with aiohttp.ClientSession() as session:
+        result = await check_single_card(None, session, card_input)
+
+    status_icon = "🔴"
+    if result['status'] == 'LIVE': status_icon = "🟢"
+    elif result['status'] == '3DS': status_icon = "🟡"
+    
+    await msg.edit_text(f"{status_icon} **{result['status']}**\n`{result['msg']}`", parse_mode="Markdown")
+
+# --- HÀM CẬP NHẬT STATS REAL-TIME ---
+class CheckStats:
+    def __init__(self):
+        self.total = 0
+        self.checked = 0
+        self.live = 0
+        self.die = 0
+        self.error = 0
+        self.start_time = time.time()
+        self.is_running = True
+
+async def report_progress(message, stats: CheckStats):
+    """Cập nhật tin nhắn thống kê mỗi 3 giây."""
+    while stats.is_running:
+        if stats.checked > 0:
+            elapsed = time.time() - stats.start_time
+            cpm = int((stats.checked / elapsed) * 60) if elapsed > 0 else 0
+            
+            # Lấy thông số hệ thống
+            cpu_usage = psutil.cpu_percent()
+            ram_usage = psutil.virtual_memory().percent
+
+            text = (
+                f"📊 **TRẠNG THÁI CHECK REAL-TIME**\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💳 Tổng: `{stats.total}`\n"
+                f"🔄 Đã check: `{stats.checked}`\n"
+                f"🟢 Live: `{stats.live}`\n"
+                f"🔴 Die: `{stats.die}`\n"
+                f"⚪ Error/Unk: `{stats.error}`\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"⚡ CPM: `{cpm}`\n"
+                f"🖥 CPU: `{cpu_usage}%` | 💾 RAM: `{ram_usage}%`"
+            )
+            
+            try:
+                await message.edit_text(text, parse_mode="Markdown")
+            except Exception:
+                pass # Bỏ qua nếu bị rate limit
+        
+        await asyncio.sleep(3) # Cập nhật mỗi 3s
+
+# Wrapper worker để update stats
+async def worker_with_stats(sem, session, card, stats, results_list):
+    res = await check_single_card(sem, session, card)
+    
+    stats.checked += 1
+    if res['status'] == 'LIVE':
+        stats.live += 1
+    elif res['status'] == 'DIE':
+        stats.die += 1
+    else:
+        stats.error += 1
+        
+    results_list.append(res)
 
 @dp.message(F.document)
 async def handle_document(message: types.Message):
@@ -337,64 +422,63 @@ async def handle_document(message: types.Message):
     if not doc.file_name.endswith('.txt'):
         return await message.reply("⚠️ Chỉ nhận file .txt!")
 
-    status_msg = await message.reply("⏳ Đang tải file và xử lý...")
+    status_msg = await message.reply("⏳ Đang tải file...")
 
-    # Tải file về bộ nhớ
+    # Tải file
     file_io = io.BytesIO()
     bot_file = await bot.get_file(doc.file_id)
     await bot.download_file(bot_file.file_path, file_io)
     file_io.seek(0)
     
-    # Đọc thẻ
     content = file_io.read().decode('utf-8', errors='ignore')
     cards = [line.strip() for line in content.splitlines() if line.strip()]
     
     if not cards:
         return await status_msg.edit_text("⚠️ File rỗng!")
 
-    total_cards = len(cards)
-    await status_msg.edit_text(f"🚀 Bắt đầu check {total_cards} thẻ với 100 luồng...")
+    # Khởi tạo Stats
+    stats = CheckStats()
+    stats.total = len(cards)
+
+    # Chạy Background Task update tin nhắn
+    monitor_task = asyncio.create_task(report_progress(status_msg, stats))
 
     # Cấu hình worker
-    sem = asyncio.Semaphore(100) # 10 luồng
+    sem = asyncio.Semaphore(100) # 100 luồng
     tasks = []
+    results = [] # Danh sách chứa kết quả để tạo file cuối cùng
     
     async with aiohttp.ClientSession() as session:
         for card in cards:
-            tasks.append(asyncio.create_task(check_single_card(sem, session, card)))
+            tasks.append(asyncio.create_task(worker_with_stats(sem, session, card, stats, results)))
         
-        results = await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks)
 
-    # Tổng hợp kết quả
-    live_list = []
-    die_count = 0
-    unknown_count = 0
+    # Dừng monitor
+    stats.is_running = False
+    await monitor_task # Đợi lần update cuối
+    
+    # Tổng hợp kết quả Live
+    live_list = [res['msg'] for res in results if res['status'] == 'LIVE']
 
-    for res in results:
-        if res['status'] == 'LIVE':
-            live_list.append(res['msg'])
-        elif res['status'] == 'DIE':
-            die_count += 1
-        else:
-            unknown_count += 1
-
-    # Gửi kết quả
-    summary = (
+    # Tạo nội dung tổng kết cuối cùng
+    final_summary = (
         f"✅ **HOÀN THÀNH**\n"
-        f"-------------------\n"
-        f"💳 Tổng: {total_cards}\n"
-        f"🟢 Live: {len(live_list)}\n"
-        f"🔴 Die: {die_count}\n"
-        f"⚪ Unknown/Error: {unknown_count}"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💳 Tổng: `{stats.total}`\n"
+        f"🟢 Live: `{stats.live}`\n"
+        f"🔴 Die: `{stats.die}`\n"
+        f"⚪ Error: `{stats.error}`\n"
+        f"⏱ Thời gian: `{int(time.time() - stats.start_time)}s`"
     )
 
     if live_list:
-        # Tạo file kết quả
         result_str = "\n".join(live_list)
         result_file = BufferedInputFile(result_str.encode('utf-8'), filename="live_cards.txt")
-        await message.reply_document(result_file, caption=summary)
+        # Gửi file mới, xóa tin nhắn báo cáo cũ hoặc edit nó
+        await message.reply_document(result_file, caption=final_summary, parse_mode="Markdown")
     else:
-        await message.reply(summary + "\n\n⚠️ Không tìm thấy thẻ Live nào.")
+        await message.reply(final_summary + "\n\n⚠️ Không tìm thấy thẻ Live nào.", parse_mode="Markdown")
 
 # ===================================================================
 # === MAIN EXECUTION
