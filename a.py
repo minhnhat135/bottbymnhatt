@@ -224,12 +224,61 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
     return encrypted_details
 
 def generate_browser_profile():
-    chrome_version = random.randint(120, 131)
-    user_agent = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version}.0.0.0 Safari/537.36"
+    """
+    Tạo User-Agent và Client Hints siêu random (Triệu tỉ tỉ cases).
+    Hỗ trợ Windows, macOS, Linux với version Chrome thực tế.
+    """
+    
+    # 1. Random Platform
+    platforms = [
+        {
+            'os_name': 'Windows',
+            'platform_header': '"Windows"',
+            # Windows 10 hoặc 11 (NT 10.0 là chung cho cả 2)
+            'ua_platform_part': 'Windows NT 10.0; Win64; x64'
+        },
+        {
+            'os_name': 'macOS',
+            'platform_header': '"macOS"',
+            # Random versions từ Big Sur (11) đến Sonoma (14)
+            'ua_platform_part': f'Macintosh; Intel Mac OS X 10_{random.randint(13, 15)}_{random.randint(1, 7)}'
+        },
+        {
+            'os_name': 'Linux',
+            'platform_header': '"Linux"',
+            'ua_platform_part': 'X11; Linux x86_64'
+        }
+    ]
+    
+    # Tỉ lệ: 70% Windows, 20% Mac, 10% Linux
+    chosen_os = random.choices(platforms, weights=[70, 20, 10], k=1)[0]
+    
+    # 2. Random Chrome Version (Major từ 120 đến 133, Build cực chi tiết)
+    major_ver = random.randint(120, 133)
+    build_minor = random.randint(0, 9)       # Ví dụ: .0
+    build_patch = random.randint(1000, 6999) # Ví dụ: .6367
+    build_tweak = random.randint(0, 255)     # Ví dụ: .91
+    
+    full_version_str = f"{major_ver}.{build_minor}.{build_patch}.{build_tweak}"
+    
+    # 3. Tạo User Agent String
+    user_agent = f"Mozilla/5.0 ({chosen_os['ua_platform_part']}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{full_version_str} Safari/537.36"
+    
+    # 4. Tạo Client Hints (Sec-CH-UA) khớp với User Agent
+    # Shuffle thứ tự các brand để tăng độ unique
+    brands = [
+        {"brand": "Not_A Brand", "version": "8"},
+        {"brand": "Chromium", "version": str(major_ver)},
+        {"brand": "Google Chrome", "version": str(major_ver)}
+    ]
+    random.shuffle(brands)
+    
+    sec_ch_ua_str = ", ".join([f'"{b["brand"]}";v="{b["version"]}"' for b in brands])
+    
     return {
         "user_agent": user_agent,
-        "sec_ch_ua": f'"Not_A Brand";v="8", "Chromium";v="{chrome_version}", "Google Chrome";v="{chrome_version}"',
-        "platform": '"Windows"'
+        "sec_ch_ua": sec_ch_ua_str,
+        "platform": chosen_os['platform_header']
     }
 
 def generate_checkout_attempt_id():
@@ -612,7 +661,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == '__main__':
     # THAY TOKEN CỦA BẠN VÀO ĐÂY
-    TOKEN = "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I"
+    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
     
     print(f"{Fore.GREEN}[BOT] Bot started...")
     
