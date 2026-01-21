@@ -9,7 +9,7 @@ import random
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from colorama import Fore, init, Style
 import io
 import threading
@@ -104,8 +104,8 @@ def get_short_brand_name(cc):
 # ===================================================================
 
 def get_current_timestamp():
-    """Tạo timestamp theo định dạng ISO 8601 UTC."""
-    return datetime.utcnow().isoformat() + 'Z'
+    """Tạo timestamp theo định dạng ISO 8601 UTC (Fix DeprecationWarning)."""
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 def generate_fake_log(input_len):
     log_entries = []
@@ -277,7 +277,7 @@ def generate_checkout_attempt_id():
     return f"{uuid_part}{suffix}"
 
 # ===================================================================
-# === PHẦN 4: HÀM CHECK THẺ (CORE LOGIC) - ĐÃ SỬA ĐỂ TRẢ VỀ KẾT QUẢ
+# === PHẦN 4: HÀM CHECK THẺ (CORE LOGIC)
 # ===================================================================
 
 def check_card_process(line_card):
@@ -285,16 +285,26 @@ def check_card_process(line_card):
     start_time_card = time.time()
     
     # Chuẩn hóa
-    line_card = line_card.strip()
-    normalized = normalize_card(line_card)
+    line_card_stripped = line_card.strip()
+    normalized = normalize_card(line_card_stripped)
     
+    # [FIX] Trả về result_string ngay cả khi lỗi định dạng
     if not normalized:
-        return {"status": "ERROR", "msg": "FORMAT_ERROR", "raw": line_card, "time": 0}
+        return {
+            "status": "ERROR", 
+            "result_string": f"{line_card_stripped} - FORMAT_ERROR", 
+            "time": 0
+        }
 
     cc, mm, yyyy, cvc = normalized.split('|')
 
+    # [FIX] Trả về result_string khi Luhn fail
     if not validate_luhn(cc):
-        return {"status": "ERROR", "msg": "LUHN_FAIL", "raw": normalized, "time": 0}
+        return {
+            "status": "ERROR", 
+            "result_string": f"{normalized} - LUHN_FAIL", 
+            "time": 0
+        }
 
     # Cấu hình API Key
     ADYEN_PUB_KEY = "10001|C740E51C2E7CEDAFC96AA470E575907B40E84E861C8AB2F4952423F704ABC29255A37C24DED6068F7D1E394100DAD0636A8362FC1A5AAE658BB9DA4262676D3BFFE126D0DF11C874DB9C361A286005280AD45C06876395FB60977C25BED6969A3A586CD95A3BE5BE2016A56A5FEA4287C9B4CAB685A243CFA04DC5C115E11C2473B5EDC595D3B97653C0EA42CB949ECDEA6BC60DC9EDF89154811B5E5EBF57FDC86B7949BA300F679716F67378361FF88E33E012F31DB8A14B00C3A3C2698D2CA6D3ECD9AE16056EE8E13DFFE2C99E1135BBFCE4718822AB8EA74BEBA4B1B99BBE43F2A6CC70882B6E5E1A917F8264180BE6CD7956967B9D8429BF9C0808004F"
@@ -403,7 +413,12 @@ def check_card_process(line_card):
     time_taken = round(end_time_card - start_time_card, 2)
 
     if not success_request:
-        return {"status": "ERROR", "msg": "NETWORK_FAIL", "raw": normalized, "time": time_taken}
+        # [FIX] Trả về result_string khi lỗi mạng
+        return {
+            "status": "ERROR", 
+            "result_string": f"{normalized} - NETWORK_FAIL_MAX_RETRIES", 
+            "time": time_taken
+        }
 
     # Trích xuất dữ liệu
     additionalData = data.get('additionalData', {})
@@ -456,12 +471,16 @@ def worker(chat_id, q):
             task = user_tasks.get(chat_id)
             if task:
                 task['checked'] += 1
+                
+                # Đảm bảo có key result_string
+                r_str = res.get('result_string', f"Unknown Error {card}")
+
                 if res['status'] == 'APPROVED':
                     task['live'] += 1
-                    task['live_list'].append(f"{res['result_string']} - Time: {res['time']}s")
+                    task['live_list'].append(f"{r_str} - Time: {res['time']}s")
                 elif res['status'] == 'DIE':
                     task['die'] += 1
-                    task['die_list'].append(f"{res['result_string']} - Time: {res['time']}s")
+                    task['die_list'].append(f"{r_str} - Time: {res['time']}s")
                 else:
                     task['error'] += 1
         except Exception as e:
@@ -543,10 +562,14 @@ def single_check(message):
     
     status_icon = "✅" if res['status'] == 'APPROVED' else "🔴" if res['status'] == 'DIE' else "⚠️"
     
+    # [FIX] Sử dụng .get() cho an toàn, mặc dù đã fix trong hàm check
+    res_str = res.get('result_string', 'No Result')
+    time_taken = res.get('time', 0)
+
     response_text = (
         f"{status_icon} **Result:** `{res['status']}`\n"
-        f"📄 `{res['result_string']}`\n"
-        f"⏱ Time taken: `{res['time']}s`"
+        f"📄 `{res_str}`\n"
+        f"⏱ Time taken: `{time_taken}s`"
     )
     
     bot.edit_message_text(chat_id=message.chat.id, message_id=msg.message_id, text=response_text, parse_mode="Markdown")
