@@ -32,7 +32,7 @@ import requests
 # === CẤU HÌNH BOT
 # ===================================================================
 # ĐIỀN TOKEN BOT CỦA BẠN VÀO ĐÂY
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN" 
+BOT_TOKEN = "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I" 
 
 # ===================================================================
 # === PHẦN 1: CÁC HÀM VALIDATION THẺ (GIỮ NGUYÊN)
@@ -591,7 +591,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================================================================
 
 if __name__ == '__main__':
-    if BOT_TOKEN == "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I":
+    if BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
         print("LỖI: Chưa nhập Token Bot!")
         sys.exit()
 
