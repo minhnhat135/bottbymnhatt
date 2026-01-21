@@ -34,7 +34,7 @@ from telegram.constants import ParseMode
 # ===================================================================
 # === CONFIGURATION
 # ===================================================================
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Thay bằng token bot của bạn
+TELEGRAM_BOT_TOKEN = "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I"  # Thay bằng token bot của bạn
 
 # Khóa để xử lý in ấn và ghi file an toàn trong đa luồng
 print_lock = threading.Lock()
