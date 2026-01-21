@@ -661,7 +661,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == '__main__':
     # THAY TOKEN CỦA BẠN VÀO ĐÂY
-    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+    TOKEN = "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I"
     
     print(f"{Fore.GREEN}[BOT] Bot started...")
     
