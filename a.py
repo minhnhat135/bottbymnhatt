@@ -22,7 +22,7 @@ PROXY_STR = "http://88634867-zone-custom-region-SG:AetOKcLB@asg.360s5.com:3600"
 PROXIES_CONF = {"http": PROXY_STR, "https": PROXY_STR}
 
 # Global Variables
-MAX_WORKERS = 100  # Số luồng mặc định
+MAX_WORKERS = 200  # Số luồng mặc định
 
 # ==============================================================================
 # PHẦN 1: HÀM HỖ TRỢ (GIỮ NGUYÊN TỪ CODE CŨ)
