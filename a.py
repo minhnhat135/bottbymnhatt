@@ -17,7 +17,7 @@ bot = telebot.TeleBot(API_TOKEN)
 
 # Proxy Configuration (Hardcoded)
 # Format gốc: IP:PORT:USER:PASS
-# asg.360s5.com:3600:88634867-zone-custom-region-SG:AetOKcLB
+# asg.360s5.com:3600:88634867-zone-custom-region-US:AetOKcLB
 PROXY_STR = "http://88634867-zone-custom:AetOKcLB@asg.360s5.com:3600"
 PROXIES_CONF = {"http": PROXY_STR, "https": PROXY_STR}
 
