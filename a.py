@@ -39,7 +39,7 @@ except ImportError:
 # ===================================================================
 
 # Token Telegram (THAY THẾ BẰNG TOKEN CỦA BẠN)
-BOT_TOKEN = "8110946929:AAGFn8gap9gMHH4_pABitcNd-saTGl24g0I"
+BOT_TOKEN = "8414556300:AAGs-pW76xOmEzi-SbLcHDaUOiUXtYpBq_0"
 
 # Cấu hình Proxy cứng từ yêu cầu
 PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom-region-SG:AetOKcLB"
