@@ -532,7 +532,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     stats.total = total_cards
     
     status_msg = await update.message.reply_text(
-        f"🚀 **Starting 20 Threads...**\n"
+        f"🚀 **Starting 100 Threads...**\n"
         f"💰 Mode: {price_display}\n"
         f"Cards: {total_cards}"
     )
@@ -545,7 +545,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     for f_path in [live_file, die_file, error_file]:
         if os.path.exists(f_path): os.remove(f_path)
 
-    semaphore = asyncio.Semaphore(20)
+    semaphore = asyncio.Semaphore(100)
     file_lock = asyncio.Lock()
     
     async def update_ui_loop():
