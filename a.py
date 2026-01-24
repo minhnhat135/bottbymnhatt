@@ -477,7 +477,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     stats.total = total_cards
     
     status_msg = await update.message.reply_text(
-        f"🚀 **Đang khởi động 100 luồng...**\n"
+        f"🚀 **Đang khởi động 20 luồng...**\n"
         f"Tổng: {total_cards} thẻ tìm thấy."
     )
 
@@ -491,8 +491,8 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     for f_path in [live_file, die_file, error_file]:
         if os.path.exists(f_path): os.remove(f_path)
 
-    # Semaphore 100 luồng và Lock ghi file
-    semaphore = asyncio.Semaphore(100) # Đã set về 100 theo text cũ (hoặc 20 tùy chỉnh)
+    # Semaphore 20 luồng và Lock ghi file
+    semaphore = asyncio.Semaphore(20)
     file_lock = asyncio.Lock()
     
     # Task update UI background
