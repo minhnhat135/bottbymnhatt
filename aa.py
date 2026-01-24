@@ -316,19 +316,11 @@ def get_short_brand_name(cc):
 
 def generate_random_email():
     """
-    Tạo email ngẫu nhiên với tên US và domain gmail/hotmail
+    Tạo email random string 20 ký tự + @hotmail.com
     """
-    us_names = [
-        "james", "john", "robert", "michael", "william", "david", "richard", "joseph", "thomas", "charles", 
-        "christopher", "daniel", "matthew", "anthony", "donald", "mark", "paul", "steven", "andrew", "kenneth", 
-        "joshua", "kevin", "brian", "george", "edward", "ronald", "timothy", "jason", "jeffrey", "ryan", 
-        "jacob", "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott", "brandon", 
-        "benjamin", "samuel", "frank", "gregory", "raymond", "alexander", "patrick", "jack", "dennis", "jerry"
-    ]
-    name = random.choice(us_names)
-    random_str = ''.join(random.choices(string.digits, k=4))
-    domain = random.choice(["@gmail.com", "@hotmail.com"])
-    return f"{name}{random_str}{domain}"
+    chars = string.ascii_lowercase + string.digits  # a-z + 0-9
+    random_str = ''.join(random.choices(chars, k=20))
+    return f"{random_str}@hotmail.com"
 
 def generate_dadus():
     user = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
