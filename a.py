@@ -246,7 +246,7 @@ async def check_card_core(line, price_val=1.99, offer_id=38334, session_semaphor
     result = {
         "status": "ERROR",
         "msg": "Invalid Format",
-        "full_log": line,
+        "full_log": line + " - Invalid Format",
         "is_live": False
     }
 
@@ -260,6 +260,7 @@ async def check_card_core(line, price_val=1.99, offer_id=38334, session_semaphor
     
     if not validate_luhn(cc):
         result["msg"] = "Luhn Fail"
+        result["full_log"] = f"{line} - Luhn Fail"
         return result
 
     # Nếu có semaphore (chạy file) thì dùng, không thì chạy thẳng (lệnh /st)
@@ -393,7 +394,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
             await asyncio.sleep(0.5)
             continue
 
-    return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|...|ERROR|Timeout or Network Error"}
+    return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error"}
 
 # ===================================================================
 # === PHẦN 4: BOT COMMAND HANDLERS
@@ -479,14 +480,15 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Tổng: {total_cards} thẻ."
     )
 
-    # Chuẩn bị file kết quả tạm
+    # Chuẩn bị 3 file kết quả
     chat_id = update.effective_chat.id
     live_file = f"live_{chat_id}.txt"
     die_file = f"die_{chat_id}.txt"
+    error_file = f"error_{chat_id}.txt"
     
-    # Xóa file cũ nếu tồn tại
-    if os.path.exists(live_file): os.remove(live_file)
-    if os.path.exists(die_file): os.remove(die_file)
+    # Xóa file cũ nếu tồn tại để tránh ghi đè
+    for f_path in [live_file, die_file, error_file]:
+        if os.path.exists(f_path): os.remove(f_path)
 
     # Semaphore 100 luồng và Lock ghi file
     semaphore = asyncio.Semaphore(20)
@@ -523,24 +525,22 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = await check_card_core(line, session_semaphore=semaphore)
         stats.checked += 1
         
-        if res["is_live"]:
-            stats.live += 1
-            print(f"🔥 LIVE FOUND: {res['full_log']}") # Backup console log
-            
-            # Dùng lock để ghi file an toàn
-            async with file_lock:
+        async with file_lock:
+            if res["is_live"]:
+                stats.live += 1
+                print(f"🔥 LIVE FOUND: {res['full_log']}")
                 with open(live_file, "a", encoding="utf-8") as f:
                     f.write(res["full_log"] + "\n")
-        else:
-            if res["status"] == "ERROR":
+            elif res["status"] == "ERROR":
                 stats.error += 1
+                # Ghi vào file Error (đã bao gồm lý do trong full_log)
+                with open(error_file, "a", encoding="utf-8") as f:
+                    f.write(res["full_log"] + "\n")
             else:
                 stats.die += 1
-            
-            # Ghi file die không cần quá quan trọng lock nhưng tốt nhất vẫn nên có nếu muốn chuẩn
-            # Ở đây ta chỉ log live kỹ
-            # with open(die_file, "a", encoding="utf-8") as f:
-            #     f.write(res["full_log"] + "\n")
+                # Ghi vào file Die
+                with open(die_file, "a", encoding="utf-8") as f:
+                    f.write(res["full_log"] + "\n")
     
     # Chạy tasks
     tasks = [worker(line) for line in lines]
@@ -551,28 +551,31 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ui_task # Chờ update cuối
 
     # Gửi kết quả
-    await update.message.reply_text("✅ **Hoàn tất! Đang gửi file...**")
+    await update.message.reply_text("✅ **Hoàn tất! Đang gửi các file kết quả...**")
     
-    # Gửi file LIVE (Sửa lại logic gửi file để tránh file rỗng)
-    if os.path.exists(live_file) and stats.live > 0:
-        try:
-            # Fix: Dùng open(..., 'rb') thay vì InputFile để đảm bảo nội dung được đọc đúng
-            with open(live_file, 'rb') as f:
-                await update.message.reply_document(
-                    document=f, 
-                    caption=f"✅ Live Cards ({stats.live})"
-                )
-            # Chỉ xóa file nếu gửi thành công
-            os.remove(live_file)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Lỗi gửi file Live: {str(e)}\n\n⚠️ File vẫn được lưu trên server với tên: `{live_file}`. Bạn hãy mở thủ công.")
-    else:
-        await update.message.reply_text("Không có thẻ Live.")
+    # Hàm gửi file an toàn
+    async def send_result_file(file_path, caption_title):
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            try:
+                with open(file_path, 'rb') as f:
+                    await update.message.reply_document(
+                        document=f, 
+                        caption=f"📂 {caption_title}"
+                    )
+            except Exception as e:
+                await update.message.reply_text(f"❌ Lỗi gửi file {caption_title}: {str(e)}")
+            finally:
+                # Xóa file sau khi gửi (hoặc cố gắng gửi)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+        elif os.path.exists(file_path):
+            # Xóa file rỗng nếu có tạo ra
+            os.remove(file_path)
 
-    # File die (có thể bỏ qua hoặc gửi tương tự)
-    if os.path.exists(die_file):
-        # Dọn dẹp file die
-        os.remove(die_file)
+    # Gửi lần lượt 3 file
+    await send_result_file(live_file, f"✅ Live Cards ({stats.live})")
+    await send_result_file(die_file, f"❌ Die Cards ({stats.die})")
+    await send_result_file(error_file, f"⚠️ Error/Invalid Cards ({stats.error})")
 
 # ===================================================================
 # === MAIN
