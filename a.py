@@ -14,7 +14,7 @@ import psutil
 from datetime import datetime
 
 # Thư viện Telegram
-from telegram import Update, InputFile
+from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
 # Import curl_cffi
@@ -425,8 +425,6 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
         # Format đặc biệt cho /st: BIN xuống dòng
         if "full_log" in result and "bin_info" in result:
              # Tách log gốc để lấy phần đầu, sau đó ghép lại theo format /st yêu cầu
-             # Format gốc: ...|MSG - [BIN INFO] - Time...
-             # Ta cần xuống dòng chỗ BIN INFO
              base_log = result['full_log'].split(" - [")[0] # Lấy phần info thẻ và msg
              bin_info = result['bin_info']
              time_str = result['full_log'].split("] - ")[-1]
@@ -490,8 +488,9 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if os.path.exists(live_file): os.remove(live_file)
     if os.path.exists(die_file): os.remove(die_file)
 
-    # Semaphore 100 luồng
+    # Semaphore 100 luồng và Lock ghi file
     semaphore = asyncio.Semaphore(20)
+    file_lock = asyncio.Lock() # Fix: Tránh race condition khi ghi file
     
     # Task update UI background
     async def update_ui_loop():
@@ -526,15 +525,22 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if res["is_live"]:
             stats.live += 1
-            with open(live_file, "a", encoding="utf-8") as f:
-                f.write(res["full_log"] + "\n")
+            print(f"🔥 LIVE FOUND: {res['full_log']}") # Backup console log
+            
+            # Dùng lock để ghi file an toàn
+            async with file_lock:
+                with open(live_file, "a", encoding="utf-8") as f:
+                    f.write(res["full_log"] + "\n")
         else:
             if res["status"] == "ERROR":
                 stats.error += 1
             else:
                 stats.die += 1
-            with open(die_file, "a", encoding="utf-8") as f:
-                f.write(res["full_log"] + "\n")
+            
+            # Ghi file die không cần quá quan trọng lock nhưng tốt nhất vẫn nên có nếu muốn chuẩn
+            # Ở đây ta chỉ log live kỹ
+            # with open(die_file, "a", encoding="utf-8") as f:
+            #     f.write(res["full_log"] + "\n")
     
     # Chạy tasks
     tasks = [worker(line) for line in lines]
@@ -547,14 +553,25 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Gửi kết quả
     await update.message.reply_text("✅ **Hoàn tất! Đang gửi file...**")
     
-    if os.path.exists(live_file):
-        await update.message.reply_document(document=InputFile(live_file), caption=f"✅ Live Cards ({stats.live})")
-        os.remove(live_file)
+    # Gửi file LIVE (Sửa lại logic gửi file để tránh file rỗng)
+    if os.path.exists(live_file) and stats.live > 0:
+        try:
+            # Fix: Dùng open(..., 'rb') thay vì InputFile để đảm bảo nội dung được đọc đúng
+            with open(live_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f, 
+                    caption=f"✅ Live Cards ({stats.live})"
+                )
+            # Chỉ xóa file nếu gửi thành công
+            os.remove(live_file)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Lỗi gửi file Live: {str(e)}\n\n⚠️ File vẫn được lưu trên server với tên: `{live_file}`. Bạn hãy mở thủ công.")
     else:
         await update.message.reply_text("Không có thẻ Live.")
 
+    # File die (có thể bỏ qua hoặc gửi tương tự)
     if os.path.exists(die_file):
-        await update.message.reply_document(document=InputFile(die_file), caption=f"❌ Die/Error Cards ({stats.die + stats.error})")
+        # Dọn dẹp file die
         os.remove(die_file)
 
 # ===================================================================
