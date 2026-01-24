@@ -42,7 +42,7 @@ except ImportError:
 BOT_TOKEN = "8414556300:AAGs-pW76xOmEzi-SbLcHDaUOiUXtYpBq_0"
 
 # Cấu hình Proxy cứng từ yêu cầu
-PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom-region-SG:AetOKcLB"
+PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom:AetOKcLB"
 p_host, p_port, p_user, p_pass = PROXY_STR.split(":")
 PROXY_URL = f"http://{p_user}:{p_pass}@{p_host}:{p_port}"
 
