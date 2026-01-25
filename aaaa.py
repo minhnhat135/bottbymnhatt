@@ -365,8 +365,8 @@ def process_card_with_retries(cc, mm, yyyy, cvc, message_chat_id):
                 },
                 'checkoutRequest': {
                     'countryCodeFallback': 'GB', 'countryCodeOverride': '', 'email': current_email,
-                    'gameLanguage': 'en', 'gameLocale': 'en_US', 'offerId': 38548, 'platformId': '70345744830530987221',
-                    'platformType': 'portal', 'priceCurrency': 'GBP', 'priceValue': 73.99, 'quantity': 1,
+                    'gameLanguage': 'en', 'gameLocale': 'en_US', 'offerId': 38334, 'platformId': '70345744830530987221',
+                    'platformType': 'portal', 'priceCurrency': 'USD', 'priceValue': 1.99, 'quantity': 1,
                 },
                 'browserInfo': {'acceptHeader': '*/*', 'screenWidth': 2048, 'screenHeight': 1152, 'colorDepth': 24, 'userAgent': session.headers.get('user-agent'), 'timeZoneOffset': -420, 'language': 'en-US', 'javaEnabled': False},
                 'billingInfo': {'countryCode': 'US', 'postalCode': '53227'},
