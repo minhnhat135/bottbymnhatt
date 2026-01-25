@@ -443,7 +443,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             chat_id=update.effective_chat.id,
             text=f"🚀 **Started Background Task STRIPE AUTH)**\n"
                  f"Cards: {total_cards}\n"
-                 f"Threads: 100\n"
+                 f"Threads: 500\n"
                  f"Retries: 50"
         )
     except:
@@ -458,7 +458,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if os.path.exists(f_path): os.remove(f_path)
 
     # 100 Threads
-    semaphore = asyncio.Semaphore(200)
+    semaphore = asyncio.Semaphore(500)
     file_lock = asyncio.Lock()
     
     # Task cập nhật UI
