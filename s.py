@@ -203,8 +203,8 @@ async def check_card_core(line, session_semaphore=None):
         return await _execute_check_betterworld(cc, mm, yyyy, cvc, start_time)
 
 async def _execute_check_betterworld(cc, mm, yyyy, cvc, start_time):
-    # Retry configuration
-    max_retries = 20
+    # Retry configuration - ĐÃ CẬP NHẬT LÊN 50
+    max_retries = 50 
     impersonate_ver = "chrome124"
     
     # Message result holder
@@ -387,7 +387,7 @@ async def _execute_check_betterworld(cc, mm, yyyy, cvc, start_time):
                 break
 
         except Exception as e:
-            # Nếu là lần cuối cùng
+            # Nếu là lần cuối cùng (lần thứ 50)
             if attempt == max_retries - 1:
                 messegner = f"ERROR - MAX RETRIES ({str(e)})"
                 status = "ERROR"
@@ -439,7 +439,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             text=f"🚀 **Started Background Task STRIPE AUTH)**\n"
                  f"Cards: {total_cards}\n"
                  f"Threads: 100\n"
-                 f"Retries: 20"
+                 f"Retries: 50"
         )
     except:
         return
