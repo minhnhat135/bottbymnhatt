@@ -375,7 +375,6 @@ def generate_random_email():
         "christopher", "daniel", "matthew", "anthony", "donald", "mark", "paul", "steven", "andrew", "kenneth", 
         "joshua", "kevin", "brian", "george", "edward", "ronald", "timothy", "jason", "jeffrey", "ryan", 
         "jacob", "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott", "brandon"
-        "james","john","robert","michael","william","david","richard","joseph","thomas","charles",
     ]
     name = random.choice(us_names)
     random_str = ''.join(random.choices(string.digits, k=4))
