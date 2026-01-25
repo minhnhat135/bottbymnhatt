@@ -203,8 +203,8 @@ async def check_card_core(line, session_semaphore=None):
         return await _execute_check_betterworld(cc, mm, yyyy, cvc, start_time)
 
 async def _execute_check_betterworld(cc, mm, yyyy, cvc, start_time):
-    # Retry configuration - ĐÃ CẬP NHẬT LÊN 50
-    max_retries = 50 
+    # Retry configuration - ĐÃ CẬP NHẬT LÊN 50 LẦN
+    max_retries = 50
     impersonate_ver = "chrome124"
     
     # Message result holder
@@ -219,8 +219,8 @@ async def _execute_check_betterworld(cc, mm, yyyy, cvc, start_time):
         try:
             async with AsyncSession(impersonate=impersonate_ver, proxies=PROXIES_CONFIG, verify=False, timeout=30) as session:
                 
-                # Get BIN info ở lần chạy đầu tiên
-                if attempt == 0:
+                # Get BIN info ở lần chạy đầu tiên (hoặc nếu chưa có)
+                if attempt == 0 or bin_info_str == "Checking...":
                     bin_info_str = await get_bin_info(session, cc)
 
                 email_random = random_string(10)
@@ -306,6 +306,7 @@ async def _execute_check_betterworld(cc, mm, yyyy, cvc, start_time):
                 match_token = re.search(r'<meta name="csrf-token" content="(.*?)"', html_source)
                 
                 if not match_au or not match_token:
+                    # Không lấy được Token -> Retry
                     raise Exception("Missing Tokens (au/csrf)")
 
                 au_token = match_au.group(1)
@@ -333,11 +334,15 @@ async def _execute_check_betterworld(cc, mm, yyyy, cvc, start_time):
                 }
 
                 req3 = await session.post(setup_url, data=data_setup, headers=headers_bw)
-                json_setup = req3.json()
+                try:
+                    json_setup = req3.json()
+                except:
+                    raise Exception("Setup JSON Error")
                 
                 if "data" in json_setup and "user_setup_intent_id" in json_setup["data"]:
                     intent_id = json_setup["data"]["user_setup_intent_id"]
                 else:
+                    # Không lấy được Intent ID -> Retry
                     raise Exception("Missing Intent ID")
 
                 # ---------------------------------------------------------
