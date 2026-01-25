@@ -365,7 +365,7 @@ async def _execute_check_betterworld(cc, mm, yyyy, cvc, start_time):
 
                 if "user_payment_method_id" in response_text and req4.status_code in [200, 201]:
                     status = "APPROVED"
-                    messegner = "APPROVED V3 ✅ - BetterWorld"
+                    messegner = "APPROVED V3 ✅ - STRIPE AUTH"
                     is_live = True
                 elif error_desc:
                     status = "DECLINED"
@@ -436,7 +436,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     try:
         status_msg = await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"🚀 **Started Background Task (BetterWorld)**\n"
+            text=f"🚀 **Started Background Task STRIPE AUTH)**\n"
                  f"Cards: {total_cards}\n"
                  f"Threads: 100\n"
                  f"Retries: 20"
@@ -453,7 +453,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if os.path.exists(f_path): os.remove(f_path)
 
     # 100 Threads
-    semaphore = asyncio.Semaphore(100)
+    semaphore = asyncio.Semaphore(200)
     file_lock = asyncio.Lock()
     
     # Task cập nhật UI
@@ -468,7 +468,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 progress_bar = generate_progress_bar(stats.checked, stats.total, length=15)
                 
                 text = (
-                    f"⚡ **Checking BetterWorld...**\n"
+                    f"⚡ **Checking STRIPEAUTH...**\n"
                     f"{progress_bar}\n"
                     f"✅ Live: {stats.live} | ❌ Die: {stats.die} | ⚠️ Err: {stats.error}\n"
                     f"Checked: {stats.checked}/{stats.total}\n"
@@ -551,12 +551,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     role = "ADMIN 👑" if user_id == ADMIN_ID else "MEMBER 👤"
     
     await update.message.reply_text(
-        f"🤖 **BetterWorld Checker Bot**\n"
+        f"🤖 **STRIPE AUTH Checker Bot**\n"
         f"👋 Xin chào, {role}\n\n"
         "1. `/st <cc>`: Check lẻ.\n"
         "2. Gửi file `.txt` hoặc `/mass` để check (Chạy ẩn).\n"
         "3. `/allow <id>`: Thêm thành viên (ADMIN).\n\n"
-        f"Gate: Bubstrong Betterworld (Stripe Setup Intent)"
+        f"Gate: Bubstrong STRIPE AUTH (Stripe Setup Intent)"
     )
 
 async def allow_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -590,7 +590,7 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
         card_data = cards[0]
         
-        msg = await update.message.reply_text(f"⏳ Đang check: {card_data}\nGate: BetterWorld")
+        msg = await update.message.reply_text(f"⏳ Đang check: {card_data}\nGate: STRIPE AUTH")
         
         result = await check_card_core(card_data)
         
