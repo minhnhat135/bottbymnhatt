@@ -584,7 +584,8 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     status_msg = await update.message.reply_text(
         f"🚀 **Starting 100 Threads...**\n"
         f"💰 Mode: {price_display}\n"
-        f"Cards: {total_cards}"
+        f"Cards: {total_cards}\n"
+        f"ℹ️ *Tác vụ đang chạy nền, bạn có thể nhập lệnh khác.*"
     )
 
     chat_id = update.effective_chat.id
@@ -792,7 +793,9 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not cards:
             await update.message.reply_text("⚠️ Không tìm thấy thẻ.")
             return
-        await process_card_list(update, context, cards)
+        # SỬA LỖI: Chạy task dưới dạng background (create_task) thay vì await
+        asyncio.create_task(process_card_list(update, context, cards))
+        await update.message.reply_text("✅ **Đã đưa tác vụ vào chạy ngầm!** Bạn có thể tiếp tục sử dụng bot lệnh khác.")
     except Exception as e:
         await update.message.reply_text(f"Lỗi Mass: {str(e)}")
 
@@ -806,7 +809,10 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_content = await file.download_as_bytearray()
     full_text = file_content.decode('utf-8')
     cards = extract_cards_from_text(full_text)
-    await process_card_list(update, context, cards)
+    
+    # SỬA LỖI: Chạy task dưới dạng background (create_task) thay vì await
+    asyncio.create_task(process_card_list(update, context, cards))
+    await update.message.reply_text(f"✅ **Đã nhận file {len(cards)} thẻ và đang chạy ngầm!** Bạn có thể tiếp tục sử dụng bot.")
 
 # ===================================================================
 # === MAIN
