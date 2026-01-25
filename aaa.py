@@ -376,19 +376,6 @@ def generate_random_email():
         "joshua", "kevin", "brian", "george", "edward", "ronald", "timothy", "jason", "jeffrey", "ryan", 
         "jacob", "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott", "brandon"
         "james","john","robert","michael","william","david","richard","joseph","thomas","charles",
-        "christopher","daniel","matthew","anthony","mark","paul","steven","andrew","kenneth",
-        "joshua","kevin","brian","george","edward","timothy","jason","jeffrey","ryan",
-        "jacob","gary","nicholas","eric","jonathan","justin","scott","brandon","adam","aaron",
-        "tyler","logan","dylan","noah","liam","lucas","ethan","owen","jack","henry",
-        "samuel","nathan","isaac","caleb","evan","cole","luke","jordan","ian","sean",
-        "alex","max","leo","ben","jake","nick","chris","mike","tom","sam","dan","josh","will",
-        "zack","ryan","aaron","theo","kai","jay","matt","andy","brad","tony","kevin",
-        "elon","jeffbezos","billgates","markzuckerberg","stevejobs","timcook",
-        "leonardodicaprio","bradpitt","tomcruise","johnnydepp","ryangosling",
-        "chrisevans","chrishemsworth","robertdowney","keanureeves","willsmith",
-        "drake","kendrick","eminem","kanye","travisscott","postmalone","justinbieber",
-        "mrbeast","loganpaul","jakepaul","andrewtate","joerogan","lexfridman",
-        "lebronjames","kobebryant","michaeljordan","stephencurry","kevindurant"
     ]
     name = random.choice(us_names)
     random_str = ''.join(random.choices(string.digits, k=4))
