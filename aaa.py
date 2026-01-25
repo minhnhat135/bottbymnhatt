@@ -854,24 +854,35 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
         current_config = OFFER_MAP.get(CURRENT_OFFER_INDEX)
         card_data = cards[0]
         
+        # Gửi tin nhắn chờ (để user biết bot đã nhận lệnh)
         msg = await update.message.reply_text(f"⏳ Đang check: {card_data}\n💰 Mode: {current_config['price']}$")
         
-        result = await check_card_core(card_data)
-        
-        if "full_log" in result and "bin_info" in result:
-             base_log = result['full_log'].split(" - [")[0]
-             bin_info = result['bin_info']
-             time_str = result['full_log'].split("] - ")[-1] if "] - " in result['full_log'] else "N/A"
-             
-             formatted_response = f"💳 Card: `{card_data}`\n" \
-                                  f"ℹ️ Status: {base_log}\n" \
-                                  f"🏦 Bin: {bin_info}\n" \
-                                  f"💰 Charge: {current_config['price']}$\n" \
-                                  f"⏱ {time_str}"
-        else:
-             formatted_response = result['full_log']
+        # --- FIX NON-BLOCKING CHO SINGLE CHECK ---
+        # Đưa việc check vào task ngầm để bot lập tức rảnh tay nhận lệnh khác
+        async def run_check():
+            try:
+                result = await check_card_core(card_data)
+                
+                if "full_log" in result and "bin_info" in result:
+                     base_log = result['full_log'].split(" - [")[0]
+                     bin_info = result['bin_info']
+                     time_str = result['full_log'].split("] - ")[-1] if "] - " in result['full_log'] else "N/A"
+                     
+                     formatted_response = f"💳 Card: `{card_data}`\n" \
+                                          f"ℹ️ Status: {base_log}\n" \
+                                          f"🏦 Bin: {bin_info}\n" \
+                                          f"💰 Charge: {current_config['price']}$\n" \
+                                          f"⏱ {time_str}"
+                else:
+                     formatted_response = result['full_log']
 
-        await msg.edit_text(formatted_response)
+                await msg.edit_text(formatted_response)
+            except Exception as e:
+                await msg.edit_text(f"❌ Lỗi: {str(e)}")
+
+        # Chạy task không chờ đợi (Non-blocking)
+        asyncio.create_task(run_check())
+
     except Exception as e:
         await update.message.reply_text(f"Lỗi: {str(e)}")
 
@@ -893,6 +904,8 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg_text = f"🚀 Đã nhận {len(cards)} thẻ.\n🗑️ Lọc bỏ: {removed_count} (Lỗi/Exp <= 2025)\n✅ Còn lại: {len(valid_cards)} thẻ.\n⏳ Bắt đầu chạy ngầm..."
         await update.message.reply_text(msg_text)
+        
+        # Đã có sẵn create_task (Non-blocking)
         asyncio.create_task(process_card_list(update, context, valid_cards))
         
     except Exception as e:
@@ -920,6 +933,7 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_text = f"📂 Đã nhận file {len(cards)} thẻ.\n🗑️ Lọc bỏ: {removed_count} (Lỗi/Exp <= 2025)\n✅ Còn lại: {len(valid_cards)} thẻ.\n⏳ Bắt đầu chạy ngầm..."
     await update.message.reply_text(msg_text)
     
+    # Đã có sẵn create_task (Non-blocking)
     asyncio.create_task(process_card_list(update, context, valid_cards))
 
 # ===================================================================
