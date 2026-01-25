@@ -29,9 +29,9 @@ try:
     from Cryptodome.PublicKey import RSA
     from Cryptodome.Cipher import PKCS1_OAEP, AES
     from Cryptodome.Util.Padding import pad
-    from Cryptodome.Util.number import bytes_to_long
+    from jose import jwk
 except ImportError:
-    print("Thiếu thư viện crypto! Vui lòng chạy: pip install pycryptodomex")
+    print("Thiếu thư viện crypto! Vui lòng chạy: pip install pycryptodomex python-jose")
     sys.exit()
 
 # ===================================================================
@@ -48,7 +48,7 @@ ADMIN_ID = 7787551672
 ALLOWED_USERS_FILE = "allowed_users.json"
 
 # Cấu hình Proxy cứng từ yêu cầu
-PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom-region-SG:AetOKcLB"
+PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom:AetOKcLB"
 try:
     p_host, p_port, p_user, p_pass = PROXY_STR.split(":")
     PROXY_URL = f"http://{p_user}:{p_pass}@{p_host}:{p_port}"
@@ -113,7 +113,7 @@ def is_user_allowed(user_id):
     return user_id in users
 
 # ===================================================================
-# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0 (FIXED)
+# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0
 # ===================================================================
 
 def get_current_timestamp():
@@ -172,22 +172,12 @@ class AdyenV4_8_0:
         return self.key_object
 
     def encrypt_data(self, plain_text):
-        # --- FIX: Sử dụng Cryptodome trực tiếp để dựng key, loại bỏ python-jose ---
-        def decode_base64url(val):
-            val += '=' * (-len(val) % 4)
-            return base64.urlsafe_b64decode(val)
-
-        n_val = bytes_to_long(decode_base64url(self.key_object['n']))
-        e_val = bytes_to_long(decode_base64url(self.key_object['e']))
-        
-        # Dựng RSA Key trực tiếp từ n và e
-        rsa_key = RSA.construct((n_val, e_val))
-        
-        # Thực hiện mã hóa
+        public_key = jwk.construct(self.key_object)
+        pem = public_key.to_pem().decode('utf-8')
+        rsa_key = RSA.import_key(pem)
         random_bytes = os.urandom(64)
         cipher_rsa = PKCS1_OAEP.new(rsa_key)
         encrypted_key = cipher_rsa.encrypt(random_bytes)
-        
         cek = random_bytes
         protected_header = {"alg":"RSA-OAEP","enc":"A256CBC-HS512","version":"1"}
         protected_header_b64 = _(json.dumps(protected_header).encode('utf-8'))
