@@ -48,7 +48,7 @@ ADMIN_ID = 7787551672
 ALLOWED_USERS_FILE = "allowed_users.json"
 
 # Cấu hình Proxy cứng từ yêu cầu
-PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom:AetOKcLB"
+PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom-region-SG:AetOKcLB"
 try:
     p_host, p_port, p_user, p_pass = PROXY_STR.split(":")
     PROXY_URL = f"http://{p_user}:{p_pass}@{p_host}:{p_port}"
