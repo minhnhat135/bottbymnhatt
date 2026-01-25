@@ -369,16 +369,26 @@ def get_short_brand_name(cc):
     else: return 'unknown'
 
 def generate_random_email():
-    us_names = [
-        "james", "john", "robert", "michael", "william", "david", "richard", "joseph", "thomas", "charles", 
-        "christopher", "daniel", "matthew", "anthony", "donald", "mark", "paul", "steven", "andrew", "kenneth", 
-        "joshua", "kevin", "brian", "george", "edward", "ronald", "timothy", "jason", "jeffrey", "ryan", 
-        "jacob", "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott", "brandon"
+    """Tạo email ngẫu nhiên với username Việt Nam phổ biến."""
+    names = [
+        # Tên nam phổ biến
+        "nguyenvan", "nguyenvana", "nguyenvanb", "minhquan", "minhtuan",
+        "anhtuan", "anhduc", "quanghuy", "hoangnam", "tienphat",
+        "thanhdat", "ducthanh", "quocbao", "phuocloc", "huyhoang",
+        "vanthanh", "truonggiang", "theanh", "namphong",
+        # Tên nữ phổ biến
+        "ngocanh", "thuylinh", "quynhanh", "phuongthao", "kimngan",
+        "thuytien", "minhthu", "dieulinh", "lananh", "hoangyen",
+        "trangnguyen", "ngocbich", "maianh", "myhanh", "thanhtruc",
+        # Username kiểu đời thường
+        "phatphat", "namnam", "linhlinh", "anhyeu", "cuongpro",
+        "minhvip", "datcute", "huydz", "tuananh199", "vietnguyen",
+        "nguyenofficial"
     ]
-    name = random.choice(us_names)
-    random_str = ''.join(random.choices(string.digits, k=4))
-    domain = random.choice(["@gmail.com", "@hotmail.com", "@yahoo.com"])
-    return f"{name}{random_str}{domain}"
+
+    name = random.choice(names)
+    random_str = ''.join(random.choices(string.digits, k=3))
+    return f"{name}{random_str}@gmail.com"
 
 def generate_dadus():
     user = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
