@@ -10,7 +10,7 @@ const TelegramBot = require('node-telegram-bot-api');
 
 // --- CẤU HÌNH TELEGRAM ---
 // Thay token của bạn vào đây
-const TELEGRAM_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'; 
+const TELEGRAM_TOKEN = '8414556300:AAGs-pW76xOmEzi-SbLcHDaUOiUXtYpBq_0'; 
 
 // Khởi tạo Bot
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
