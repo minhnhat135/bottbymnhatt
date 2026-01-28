@@ -37,6 +37,7 @@ import base64
 import sys
 import random
 import time
+import re
 from datetime import datetime
 from Cryptodome.PublicKey import RSA
 from Cryptodome.Cipher import PKCS1_OAEP, AES
@@ -71,6 +72,62 @@ def mt(e, t, r):
     if not (0 <= t < bt):
         raise ValueError(f"value must be >= 0 and <= {bt - 1}")
     e[r:r+4] = [(t >> 24) & 0xff, (t >> 16) & 0xff, (t >> 8) & 0xff, t & 0xff]
+
+# --- ADDED FUNCTIONS (USER REQUEST) ---
+def normalize_card(card_str):
+    pattern = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
+    match = re.search(pattern, card_str)
+    
+    if not match:
+        return None
+    
+    card_num, month, year, cvv = match.groups()
+    
+    # Validate Month
+    try:
+        month_int = int(month)
+        if month_int < 1 or month_int > 12: return None
+    except ValueError: return None
+    
+    # Validate Year
+    if len(year) == 2: year = '20' + year
+    try:
+        year_int = int(year)
+        if year_int > 2040: return None
+    except ValueError: return None
+    
+    month = month.zfill(2)
+    return f"{card_num}|{month}|{year}|{cvv}"
+
+def extract_cards_from_text(text):
+    if not text: return []
+    valid_cards = []
+    seen = set()
+    lines = text.splitlines()
+    pattern_strict = r'(\d{13,19})[\s|/;:.-]+(\d{1,2})[\s|/;:.-]+(\d{2,4})[\s|/;:.-]+(\d{3,4})'
+    
+    for line in lines:
+        matches = re.findall(pattern_strict, line)
+        for m in matches:
+            temp_str = f"{m[0]}|{m[1]}|{m[2]}|{m[3]}"
+            normalized = normalize_card(temp_str)
+            if normalized and normalized not in seen:
+                valid_cards.append(normalized)
+                seen.add(normalized)
+    return valid_cards
+
+def validate_luhn(card_number):
+    card_num = ''.join(filter(str.isdigit, str(card_number)))
+    if not card_num or len(card_num) < 13 or len(card_num) > 19: return False
+    total = 0
+    reverse_digits = card_num[::-1]
+    for i, digit in enumerate(reverse_digits):
+        n = int(digit)
+        if i % 2 == 1:
+            n = n * 2
+            if n > 9: n = n - 9
+        total += n
+    return total % 10 == 0
 
 # --- BEHAVIORAL BIOMETRICS GENERATOR ---
 def generate_behavior_log(input_length, start_offset_ms=None):
